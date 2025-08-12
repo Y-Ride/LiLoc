@@ -5,15 +5,15 @@ System:
 
   numberOfCores: 8
 
-  mode: "relo"                                  # "lio" or "relo"
+  mode: "lio"                                  # "lio" or "relo"
 
   lidarFrame: "base_link"
   baselinkFrame: "base_link"
   odometryFrame: "odom"
   mapFrame: "map"
 
-  savePCDDirectory: "/home/yixin/lio-sam/src/data"
-  saveSessionDirectory: "/home/yixin/lio-sam/src/session"
+  savePCDDirectory: "/root/catkin_ws/results/data"
+  saveSessionDirectory: "/root/catkin_ws/results/session"
 
 Sensors:
   sensor: velodyne                              # lidar sensor type, 'velodyne' or 'ouster' or 'livox' or 'robosense'

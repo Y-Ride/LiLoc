@@ -11,4 +11,6 @@
     <!--- Run Rviz-->
     <include file="$(find liloc)/launch/include/module_rviz.launch" />
 
+    <node pkg="tf2_ros" type="static_transform_publisher" name="static_tf_lidar_to_base" args="0 0 0 0 0 3.14159 os_sensor_top os_lidar_top" />
+
 </launch>

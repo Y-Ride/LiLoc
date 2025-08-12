@@ -11,4 +11,9 @@
     <!--- Run Rviz-->
     <include file="$(find liloc)/launch/include/module_rviz.launch" />
 
+    <!-- Static TF from body to lidar -->
+    <node pkg="tf2_ros" type="static_transform_publisher" name="body_to_lidar_broadcaster" 
+      args="0.002 -0.004 -0.957 0.0141 0.0029 -1.5838 lidar body" />
+
+
 </launch>

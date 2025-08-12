@@ -1,19 +1,19 @@
 System:
-  pointCloudTopic: "points_raw" 
-  imuTopic: "imu_raw"
-  odomTopic: "odometry/imu"
+  pointCloudTopic: "velodyne_points"               # sensor_msgs/PointCloud2
+  imuTopic: "imu_6"                         # sensor_msgs/Imu
+  odomTopic: "odometry/imu"                   # nav_msgs/Odometry
 
   numberOfCores: 8
 
-  mode: "relo"                                  # "lio" or "relo"
+  mode: "lio"                                  # "lio" or "relo"
 
-  lidarFrame: "base_link"
-  baselinkFrame: "base_link"
+  lidarFrame: "lidar"
+  baselinkFrame: "body"
   odometryFrame: "odom"
   mapFrame: "map"
 
-  savePCDDirectory: "/home/yixin/lio-sam/src/data"
-  saveSessionDirectory: "/home/yixin/lio-sam/src/session"
+  savePCDDirectory: "/root/results/data"
+  saveSessionDirectory: "/root/results/session"
 
 Sensors:
   sensor: velodyne                              # lidar sensor type, 'velodyne' or 'ouster' or 'livox' or 'robosense'

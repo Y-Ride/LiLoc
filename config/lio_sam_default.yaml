@@ -1,29 +1,29 @@
 System:
-  pointCloudTopic: "velodyne_points" 
-  imuTopic: "handsfree/imu"
-  odomTopic: "odometry/imu"
+  pointCloudTopic: "/ouster_top/points" 
+  imuTopic: "/inertial_sense/imu_raw"
+  odomTopic: "/odometry/imu"
 
-  numberOfCores: 8
+  numberOfCores: 16
 
   mode: "lio"                                  # "lio" or "relo"
 
-  lidarFrame: "base_link"
-  baselinkFrame: "base_link"
+  lidarFrame: "os_lidar_top"
+  baselinkFrame: "os_sensor_top"
   odometryFrame: "odom"
   mapFrame: "map"
 
-  savePCDDirectory: "/home/yixin/lio-sam/src/data"
-  saveSessionDirectory: "/home/yixin/lio-sam/src/session"
+  savePCDDirectory: "/root/catkin_ws/src/LiLoc/pcd_data"
+  saveSessionDirectory: "/root/catkin_ws/src/LiLoc/pcd_session"
 
 Sensors:
-  sensor: velodyne                              # lidar sensor type, 'velodyne' or 'ouster' or 'livox' or 'robosense'
-  N_SCAN: 16                                    # number of lidar channel (i.e., Velodyne/Ouster: 16, 32, 64, 128, Horizon: 6, mid40: 1, mid360: 4, avia: 8)
-  Horizon_SCAN: 1800                            # lidar horizontal resolution (Velodyne: 1800, Ouster: 512, 1024, 2048)
+  sensor: ouster                              # lidar sensor type, 'velodyne' or 'ouster' or 'livox' or 'robosense'
+  N_SCAN: 64                                    # number of lidar channel (i.e., Velodyne/Ouster: 16, 32, 64, 128, Horizon: 6, mid40: 1, mid360: 4, avia: 8)
+  Horizon_SCAN: 1024                            # lidar horizontal resolution (Velodyne: 1800, Ouster: 512, 1024, 2048)
 
   have_ring_time_channel: true                  # some datasets, such as nclt and m2dgr has no ring or time channel
 
-  downsampleRate: 1                             # line - default: 1. e.g., 16 = 64 / 4, 16 = 16 / 1
-  point_filter_num: 1                           # point - default: 3. e.g., 16: 1, 32: 5, 64: 8
+  downsampleRate: 4                             # line - default: 1. e.g., 16 = 64 / 4, 16 = 16 / 1
+  point_filter_num: 8                           # point - default: 3. e.g., 16: 1, 32: 5, 64: 8
 
   lidarMinRange: 2.0                            # default: 1.0
   lidarMaxRange: 100.0                          # default: 100.0
@@ -45,15 +45,15 @@ Sensors:
   #                 0.0137,  0.9999, -0.0040,
   #                 0.1128,  0.0024,  0.9936 ]
 
-  extrinsicTrans: [ 0.031, -0.10, 0.11]
-  extrinsicRot: [ 0.9994142, 0.03275957, 0.00990251,
-                  -0.03266505,  0.99942062, -0.00956125,
-                  -0.01021,  0.00923218,  0.99990526]
+  extrinsicTrans: [-0.937882, 0.202898, -1.5748]
+  extrinsicRot: [-1.0, 0.0, 0.0,
+                   0.0, 1.0, 0.0,
+                   0.0, 0.0, -1.0]
   
   # Extrinsics: 9-axis
-  extrinsicRPY: [ 0, -1,  0,
-                  1,  0,  0,
-                  0,  0,  1 ]
+  extrinsicRPY: [-1.0, 0.0, 0.0,
+                   0.0, 1.0, 0.0,
+                   0.0, 0.0, -1.0]
   
 Mapping:
   z_tollerance: 1000                            # meters
@@ -67,7 +67,7 @@ Mapping:
 
   mappingProcessInterval: 0.0                   # seconds, mapping interval
 
-  mappingSurfLeafSize: 0.2                      # default: 0.4 - outdoor, 0.2 - indoor
+  mappingSurfLeafSize: 0.4                      # default: 0.4 - outdoor, 0.2 - indoor
 
   surroundingkeyframeAddingDistThreshold: 0.8   # meters, regulate keyframe adding threshold
   surroundingkeyframeAddingAngleThreshold: 0.2  # radians, regulate keyframe adding threshold
