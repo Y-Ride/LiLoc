@@ -24,19 +24,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-${ROS_DISTRO}-rviz \
     ros-${ROS_DISTRO}-pcl-ros \
     ros-${ROS_DISTRO}-cv-bridge \
+    ros-${ROS_DISTRO}-gtsam \
     python3-catkin-tools \
     && rm -rf /var/lib/apt/lists/*
-
-# --- Install GTSAM ---
-ARG GTSAM_VERSION="4.0.2"
-RUN git clone -b ${GTSAM_VERSION} https://github.com/borglab/gtsam.git /opt/gtsam && \
-    cd /opt/gtsam && \
-    mkdir build && cd build && \
-    cmake .. -DGTSAM_BUILD_EXAMPLES=OFF -DGTSAM_BUILD_TESTS=OFF -DGTSAM_USE_SYSTEM_EIGEN=ON -DGTSAM_WITH_METIS=ON -DBoost_NO_BOOST_CMAKE=ON && \
-    make -j$(($(nproc) / 2 < 1 ? 1 : $(nproc) / 2)) && \
-    make install && \
-    rm -rf /opt/gtsam
-RUN echo "export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH" >> ~/.bashrc
 
 # --- Install Livox SDK and ROS Driver ---
 WORKDIR /root
