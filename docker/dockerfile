@@ -1,6 +1,7 @@
 # Start from a ROS ${ROS_DISTRO} base image.
 ARG ROS_DISTRO=noetic
 FROM ros:${ROS_DISTRO}
+ENV DISABLE_ROS1_EOL_WARNINGS=1
 
 # Install common build tools and necessary dependencies
 ENV DEBIAN_FRONTEND=noninteractive
@@ -13,6 +14,7 @@ RUN apt-get update && apt-get install -y \
     libpcl-dev \
     libeigen3-dev \
     libopencv-dev \
+    pcl-tools \
     wget \
     curl \
     unzip \
@@ -25,6 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-${ROS_DISTRO}-pcl-ros \
     ros-${ROS_DISTRO}-cv-bridge \
     ros-${ROS_DISTRO}-gtsam \
+    ros-${ROS_DISTRO}-rqt-graph \
     python3-catkin-tools \
     && rm -rf /var/lib/apt/lists/*
 
@@ -62,11 +65,6 @@ RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> ~/.bashrc && \
     echo "source ~/ws_livox/devel/setup.bash" >> ~/.bashrc && \
     echo "if [ -f ~/catkin_ws/devel/setup.bash ]; then" >> ~/.bashrc && \
     echo "  source ~/catkin_ws/devel/setup.bash" >> ~/.bashrc && \
-    echo "fi" >> ~/.bashrc
-
-# Include the custom environment setup script
-RUN echo "if [ -f /yride_env_setup/custom_env.sh ]; then" >> ~/.bashrc && \
-    echo "  source /yride_env_setup/custom_env.sh" >> ~/.bashrc && \
     echo "fi" >> ~/.bashrc
 
 RUN mkdir -p /tmp/runtime-root

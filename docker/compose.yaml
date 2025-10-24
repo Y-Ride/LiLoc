@@ -6,20 +6,17 @@ services:
     image: liloc
     container_name: liloc
     volumes:
-      - ../:/root/catkin_ws/src/liloc/
-      - ${HOME}/yride_env_setup:/yride_env_setup:ro # Take out
       - /tmp/.X11-unix:/tmp/.X11-unix # Needed to display RViz within the container
+      - ../:/root/catkin_ws/src/liloc/
       - ${HOME}/data_byu/bags:/root/catkin_ws/data_byu
       - ${HOME}/data_sets:/root/catkin_ws/data_sets
-      - /dev/dri:/dev/dri
     environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
       DISPLAY: "${DISPLAY}"
-      CONTAINER_NAME: liloc # Take out
-      XDG_RUNTIME_DIR: "/tmp/runtime-root"
     network_mode: host
     stdin_open: true
     tty: true
-    gpus: all
-    # command: ["/ros_entrypoint.sh", "roscore"]
+    runtime: nvidia
     command: ["bash"]
     

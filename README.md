@@ -63,10 +63,10 @@ Since our code of "pose initailization" is under reconstrucion, you can directly
 
 ####  <strong>Remark 3:</strong> How to save your results ?
 ```bash
-rosservice call /liloc/save_map 0.2 1 1  # save results of the current session
+rosservice call /liloc/save_map 0.2 1 1  # Save results of the current session. Use 0.4 1 1 for large maps
 ```
 ```bash
-rosservice call /liloc/save_session 0.2  # save results of the updated central session
+rosservice call /liloc/save_session 0.2  # Save results of the updated central session. Use 0.4 for large maps
 ```
 
 

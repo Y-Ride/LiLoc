@@ -700,9 +700,13 @@ public:
         downSizeFilterGlobalMapKeyFrames.setLeafSize(globalMapVisualizationLeafSize, globalMapVisualizationLeafSize, globalMapVisualizationLeafSize); // for global map visualization
 
         if (mode == ModeType::RELO) {
+            // ROS_INFO("Publishing Prior GlobalMap");
             publishCloud(pubPriorGlobalMap, data_loader->globalMap_, timeLaserInfoStamp, mapFrame);
+            // ROS_INFO("Publishing Prior GlobalTrajectory");
             publishCloud(pubPriorGlobalTrajectory, data_loader->KeyPoses6D_, timeLaserInfoStamp, mapFrame);
+            // ROS_INFO("Publishing Prior LocalSubmap");
             publishCloud(pubPriorLocalSubmap, data_loader->usingSubMap_, timeLaserInfoStamp, mapFrame);
+            // ROS_INFO("Publishing Prior LocalSubmapCenteriod");
             publishCloud(pubPriorLocalSubmapCenteriod, data_loader->SubMapCenteriod_, timeLaserInfoStamp, mapFrame);
         
             visualizeLocalVertexAndEdge();
