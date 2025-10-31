@@ -1,6 +1,6 @@
 #include "utility.h"
-#include "liloc/cloud_info.h"
-#include <livox_ros_driver/CustomMsg.h>
+#include "liloc/msg/cloud_info.hpp"
+#include "livox_ros_driver2/msg/custom_msg.hpp"
 
 struct VelodynePointXYZIRT {
     PCL_ADD_POINT4D
@@ -65,23 +65,24 @@ private:
     std::mutex imuLock;
     std::mutex odoLock;
 
-    ros::Subscriber subLaserCloud;
-    ros::Publisher  pubLaserCloud;
+    rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr subLaserCloud;
+    rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr subLaserCloudLivox;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr  pubLaserCloud;
     
-    ros::Publisher pubExtractedCloud;
-    ros::Publisher pubLaserCloudInfo;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubExtractedCloud;
+    rclcpp::Publisher<liloc::msg::CloudInfo>::SharedPtr pubLaserCloudInfo;
 
-    ros::Subscriber subImu;
-    std::deque<sensor_msgs::Imu> imuQueue;
+    rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr subImu;
+    std::deque<sensor_msgs::msg::Imu> imuQueue;
 
-    ros::Subscriber subOdom;
-    std::deque<nav_msgs::Odometry> odomQueue;
+    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr subOdom;
+    std::deque<nav_msgs::msg::Odometry> odomQueue;
 
-    std::deque<sensor_msgs::PointCloud2> cloudQueue;
-    std::deque<livox_ros_driver::CustomMsg> cloudQueueLivox;
+    std::deque<sensor_msgs::msg::PointCloud2> cloudQueue;
+    std::deque<livox_ros_driver2::msg::CustomMsg> cloudQueueLivox;
 
-    sensor_msgs::PointCloud2 currentCloudMsg;
-    livox_ros_driver::CustomMsg currentCloudMsgLivox;
+    sensor_msgs::msg::PointCloud2 currentCloudMsg;
+    livox_ros_driver2::msg::CustomMsg currentCloudMsgLivox;
 
     double *imuTime = new double[queueLength];
     double *imuRotX = new double[queueLength];
@@ -104,26 +105,30 @@ private:
     float odomIncreY;
     float odomIncreZ;
 
-    liloc::cloud_info cloudInfo;
+    liloc::msg::CloudInfo cloudInfo;
     double timeScanCur;
     double timeScanEnd;
-    std_msgs::Header cloudHeader;
+    std_msgs::msg::Header cloudHeader;
 
 public:
-    ImageProjection(): deskewFlag(0) 
+    ImageProjection(const rclcpp::NodeOptions & options) : ParamServer("liloc_imageProjection", options), deskewFlag(0) 
     {
-        subImu        = nh.subscribe<sensor_msgs::Imu>(imuTopic, 2000, &ImageProjection::imuHandler, this, ros::TransportHints().tcpNoDelay());
-        subOdom       = nh.subscribe<nav_msgs::Odometry>(odomTopic+"_incremental", 2000, &ImageProjection::odometryHandler, this, ros::TransportHints().tcpNoDelay());
+        subImu        = create_subscription<sensor_msgs::msg::Imu>(imuTopic, 2000,
+                            std::bind(&ImageProjection::imuHandler, this, std::placeholders::_1));
+        subOdom       = create_subscription<nav_msgs::msg::Odometry>(odomTopic+"_incremental", 2000, 
+                            std::bind(&ImageProjection::odometryHandler, this, std::placeholders::_1));
 
         if (sensor == SensorType::LIVOX) {
-            subLaserCloud = nh.subscribe<livox_ros_driver::CustomMsg>(pointCloudTopic, 5, &ImageProjection::cloudHandlerLivox, this, ros::TransportHints().tcpNoDelay());
+            subLaserCloudLivox = create_subscription<livox_ros_driver2::msg::CustomMsg>(pointCloudTopic, 5, 
+                                std::bind(&ImageProjection::cloudHandlerLivox, this, std::placeholders::_1));
         }
         else {
-            subLaserCloud = nh.subscribe<sensor_msgs::PointCloud2>(pointCloudTopic, 5, &ImageProjection::cloudHandler, this, ros::TransportHints().tcpNoDelay());
+            subLaserCloud = create_subscription<sensor_msgs::msg::PointCloud2>(pointCloudTopic, 5, 
+                                std::bind(&ImageProjection::cloudHandler, this, std::placeholders::_1));
         }
 
-        pubExtractedCloud = nh.advertise<sensor_msgs::PointCloud2> ("liloc/deskew/cloud_deskewed", 1);
-        pubLaserCloudInfo = nh.advertise<liloc::cloud_info> ("liloc/deskew/cloud_info", 1);
+        pubExtractedCloud = create_publisher<sensor_msgs::msg::PointCloud2>("liloc/deskew/cloud_deskewed", 1);
+        pubLaserCloudInfo = create_publisher<liloc::msg::CloudInfo>("liloc/deskew/CloudInfo", 1);
 
         allocateMemory();
         resetParameters();
@@ -159,8 +164,8 @@ public:
 
     ~ImageProjection(){}
 
-    void imuHandler(const sensor_msgs::Imu::ConstPtr& imuMsg) {
-        sensor_msgs::Imu thisImu = imuConverter(*imuMsg);
+    void imuHandler(const sensor_msgs::msg::Imu::SharedPtr imuMsg) {
+        sensor_msgs::msg::Imu thisImu = imuConverter(*imuMsg);
 
         if (correct) {
             thisImu.linear_acceleration.x = thisImu.linear_acceleration.x * kAccScale;
@@ -172,12 +177,14 @@ public:
         imuQueue.push_back(thisImu);
     }
 
-    void odometryHandler(const nav_msgs::Odometry::ConstPtr& odometryMsg) {
+    void odometryHandler(const nav_msgs::msg::Odometry::SharedPtr odometryMsg) {
         std::lock_guard<std::mutex> lock2(odoLock);
         odomQueue.push_back(*odometryMsg);
     }
 
-    void cloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg) {
+    void cloudHandler(const sensor_msgs::msg::PointCloud2::SharedPtr laserCloudMsg) {
+        RCLCPP_INFO_ONCE(this->get_logger(), "Got first point cloud message from topic: %s", pointCloudTopic.c_str());
+
         if (!cachePointCloud(laserCloudMsg))
             return;
 
@@ -191,7 +198,8 @@ public:
         resetParameters();
     }
 
-    void cloudHandlerLivox(const livox_ros_driver::CustomMsg::ConstPtr &laserCloudMsg) {
+
+    void cloudHandlerLivox(const livox_ros_driver2::msg::CustomMsg::SharedPtr laserCloudMsg) {
         if (!cachePointCloudLivox(laserCloudMsg))
             return;
 
@@ -205,7 +213,7 @@ public:
         resetParameters();
     }
 
-    bool cachePointCloudLivox(const livox_ros_driver::CustomMsg::ConstPtr &laserCloudMsg) {
+    bool cachePointCloudLivox(const livox_ros_driver2::msg::CustomMsg::SharedPtr laserCloudMsg) {
         static bool first_scan = true;
         static double last_time = 0.0;
         static double first_scan_time = 0.0;
@@ -218,10 +226,10 @@ public:
         currentCloudMsgLivox = std::move(cloudQueueLivox.front());
         cloudQueueLivox.pop_front();
 
-        double cur_time = currentCloudMsgLivox.header.stamp.toSec();
+        double cur_time = ROS_TIME(currentCloudMsgLivox.header.stamp);
 
         if (cur_time < last_time) {
-            ROS_WARN("Livox Cloud Loop .");
+            RCLCPP_WARN(this->get_logger(), "Livox Cloud Loop .");
             cloudQueueLivox.clear();
             last_time = cur_time;
         }
@@ -256,7 +264,7 @@ public:
                         -> bool { return (x.time < y.time); });
 
         cloudHeader = currentCloudMsgLivox.header;
-        timeScanCur = cloudHeader.stamp.toSec();
+        timeScanCur = ROS_TIME(cloudHeader.stamp);
         timeScanEnd = timeScanCur + laserCloudIn->points.back().time / (double)(1000);
 
         first_scan = true;
@@ -267,7 +275,7 @@ public:
         return true;
     }
 
-    bool cachePointCloud(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg) {
+    bool cachePointCloud(const sensor_msgs::msg::PointCloud2::SharedPtr laserCloudMsg) {
         cloudQueue.push_back(*laserCloudMsg);
         if (cloudQueue.size() <= 2)
             return false;
@@ -277,6 +285,7 @@ public:
 
         // for no ring and time channel pointcloud
         if (!have_ring_time_channel) {
+            RCLCPP_WARN_ONCE(this->get_logger(), "The point cloud doesn't have a ring or time channel. One will be created for each point cloud.");
             pcl::PointCloud<PointXYZIRT>::Ptr lidarCloudIn(new pcl::PointCloud<PointXYZIRT>());
             pcl::moveFromROSMsg(currentCloudMsg, *lidarCloudIn);
 
@@ -378,8 +387,8 @@ public:
                 }
             }
             else {
-                ROS_ERROR_STREAM("Unknown Sensor Type: " << int(sensor));
-                ros::shutdown();
+                RCLCPP_ERROR(this->get_logger(), "Unknown Sensor Type: %d", int(sensor));
+                rclcpp::shutdown();
             }
 
             static int ringFlag = 0;
@@ -392,8 +401,8 @@ public:
                     }
                 }
                 if (ringFlag == -1) {
-                    ROS_ERROR("Point cloud ring channel not available, please configure your point cloud data!");
-                    ros::shutdown();
+                    RCLCPP_ERROR(this->get_logger(), "Point cloud ring channel not available, please configure your point cloud data!");
+                    rclcpp::shutdown();
                 }
             }
 
@@ -406,22 +415,20 @@ public:
                     }
                 }
                 if (deskewFlag == -1)
-                    ROS_WARN("Point cloud timestamp not available, deskew function disabled, system will drift significantly!");
+                    RCLCPP_WARN(this->get_logger(), "Point cloud timestamp not available, deskew function disabled, system will drift significantly!");
             }
         }
 
         cloudHeader = currentCloudMsg.header;
-        timeScanCur = cloudHeader.stamp.toSec();
+        timeScanCur = ROS_TIME(cloudHeader.stamp);
         timeScanEnd = timeScanCur + laserCloudIn->points.back().time;
 
         if (laserCloudIn->is_dense == false) {
             // ROS_ERROR("Point cloud is not in dense format, please remove NaN points first!");
             // ros::shutdown();
 
-            pcl::PointCloud<PointXYZIRT>::Ptr tmpCloud(new pcl::PointCloud<PointXYZIRT>);
             std::vector<int> indices;
-            pcl::removeNaNFromPointCloud(*laserCloudIn, *tmpCloud, indices);
-            laserCloudIn = tmpCloud;
+            pcl::removeNaNFromPointCloud(*laserCloudIn, *laserCloudIn, indices);
         }
 
         return true;
@@ -431,8 +438,8 @@ public:
         std::lock_guard<std::mutex> lock1(imuLock);
         std::lock_guard<std::mutex> lock2(odoLock);
 
-        if (imuQueue.empty() || imuQueue.front().header.stamp.toSec() > timeScanCur || imuQueue.back().header.stamp.toSec() < timeScanEnd) {
-            ROS_DEBUG("Waiting for IMU data ...");
+        if (imuQueue.empty() || ROS_TIME(imuQueue.front().header.stamp) > timeScanCur || ROS_TIME(imuQueue.back().header.stamp) < timeScanEnd) {
+            RCLCPP_DEBUG(this->get_logger(), "Waiting for IMU data ...");
             return false;
         }
 
@@ -444,10 +451,10 @@ public:
     }
 
     void imuDeskewInfo() {
-        cloudInfo.imuAvailable = false;
+        cloudInfo.imu_available = false;
 
         while (!imuQueue.empty()) {
-            if (imuQueue.front().header.stamp.toSec() < timeScanCur - 0.01)
+            if (ROS_TIME(imuQueue.front().header.stamp) < timeScanCur - 0.01)
                 imuQueue.pop_front();
             else
                 break;
@@ -459,13 +466,13 @@ public:
         imuPointerCur = 0;
 
         for (int i = 0; i < (int)imuQueue.size(); ++i) {
-            sensor_msgs::Imu thisImuMsg = imuQueue[i];
-            double currentImuTime = thisImuMsg.header.stamp.toSec();
+            sensor_msgs::msg::Imu thisImuMsg = imuQueue[i];
+            double currentImuTime = ROS_TIME(thisImuMsg.header.stamp);
 
             if (imuType) {
                 // get roll, pitch, and yaw estimation for this scan
                 if (currentImuTime <= timeScanCur)
-                    imuRPY2rosRPY(&thisImuMsg, &cloudInfo.imuRollInit, &cloudInfo.imuPitchInit, &cloudInfo.imuYawInit);
+                    imuRPY2rosRPY(&thisImuMsg, &cloudInfo.imu_roll_init, &cloudInfo.imu_pitch_init, &cloudInfo.imu_yaw_init);
             }
 
             if (currentImuTime > timeScanEnd + 0.01)
@@ -498,14 +505,14 @@ public:
         if (imuPointerCur <= 0)
             return;
 
-        cloudInfo.imuAvailable = true;
+        cloudInfo.imu_available = true;
     }
 
     void odomDeskewInfo() {
-        cloudInfo.odomAvailable = false;
+        cloudInfo.odom_available = false;
         static float sync_diff_time = (imuRate >= 300) ? 0.01 : 0.20;
         while (!odomQueue.empty()) {
-            if (odomQueue.front().header.stamp.toSec() < timeScanCur - sync_diff_time)
+            if (ROS_TIME(odomQueue.front().header.stamp) < timeScanCur - sync_diff_time)
                 odomQueue.pop_front();
             else
                 break;
@@ -514,47 +521,47 @@ public:
         if (odomQueue.empty())
             return;
 
-        if (odomQueue.front().header.stamp.toSec() > timeScanCur)
+        if (ROS_TIME(odomQueue.front().header.stamp) > timeScanCur)
             return;
 
         // get start odometry at the beinning of the scan
-        nav_msgs::Odometry startOdomMsg;
+        nav_msgs::msg::Odometry startOdomMsg;
 
         for (int i = 0; i < (int)odomQueue.size(); ++i) {
             startOdomMsg = odomQueue[i];
 
-            if (ROS_TIME(&startOdomMsg) < timeScanCur)
+            if (ROS_TIME(startOdomMsg.header.stamp) < timeScanCur)
                 continue;
             else
                 break;
         }
 
-        tf::Quaternion orientation;
-        tf::quaternionMsgToTF(startOdomMsg.pose.pose.orientation, orientation);
+        tf2::Quaternion orientation;
+        tf2::fromMsg(startOdomMsg.pose.pose.orientation, orientation);
 
         double roll, pitch, yaw;
-        tf::Matrix3x3(orientation).getRPY(roll, pitch, yaw);
+        tf2::Matrix3x3(orientation).getRPY(roll, pitch, yaw);
 
-        cloudInfo.initialGuessX = startOdomMsg.pose.pose.position.x;
-        cloudInfo.initialGuessY = startOdomMsg.pose.pose.position.y;
-        cloudInfo.initialGuessZ = startOdomMsg.pose.pose.position.z;
-        cloudInfo.initialGuessRoll  = roll;
-        cloudInfo.initialGuessPitch = pitch;
-        cloudInfo.initialGuessYaw   = yaw;
+        cloudInfo.initial_guess_x = startOdomMsg.pose.pose.position.x;
+        cloudInfo.initial_guess_y = startOdomMsg.pose.pose.position.y;
+        cloudInfo.initial_guess_z = startOdomMsg.pose.pose.position.z;
+        cloudInfo.initial_guess_roll  = roll;
+        cloudInfo.initial_guess_pitch = pitch;
+        cloudInfo.initial_guess_yaw   = yaw;
 
-        cloudInfo.odomAvailable = true;
+        cloudInfo.odom_available = true;
 
         odomDeskewFlag = false;
 
-        if (odomQueue.back().header.stamp.toSec() < timeScanEnd)
+        if (ROS_TIME(odomQueue.back().header.stamp) < timeScanEnd)
             return;
 
-        nav_msgs::Odometry endOdomMsg;
+        nav_msgs::msg::Odometry endOdomMsg;
 
         for (int i = 0; i < (int)odomQueue.size(); ++i) {
             endOdomMsg = odomQueue[i];
 
-            if (ROS_TIME(&endOdomMsg) < timeScanEnd)
+            if (ROS_TIME(endOdomMsg.header.stamp) < timeScanEnd)
                 continue;
             else
                 break;
@@ -565,8 +572,8 @@ public:
 
         Eigen::Affine3f transBegin = pcl::getTransformation(startOdomMsg.pose.pose.position.x, startOdomMsg.pose.pose.position.y, startOdomMsg.pose.pose.position.z, roll, pitch, yaw);
 
-        tf::quaternionMsgToTF(endOdomMsg.pose.pose.orientation, orientation);
-        tf::Matrix3x3(orientation).getRPY(roll, pitch, yaw);
+        tf2::fromMsg(endOdomMsg.pose.pose.orientation, orientation);
+        tf2::Matrix3x3(orientation).getRPY(roll, pitch, yaw);
         Eigen::Affine3f transEnd = pcl::getTransformation(endOdomMsg.pose.pose.position.x, endOdomMsg.pose.pose.position.y, endOdomMsg.pose.pose.position.z, roll, pitch, yaw);
 
         Eigen::Affine3f transBt = transBegin.inverse() * transEnd;
@@ -607,7 +614,7 @@ public:
 
         // If the sensor moves relatively slow, like walking speed, positional deskew seems to have little benefits. Thus code below is commented.
 
-        // if (cloudInfo.odomAvailable == false || odomDeskewFlag == false)
+        // if (cloudInfo.odom_available == false || odomDeskewFlag == false)
         //     return;
 
         // float ratio = relTime / (timeScanEnd - timeScanCur);
@@ -618,7 +625,7 @@ public:
     }
 
     PointType deskewPoint(PointType *point, double relTime) {
-        if (deskewFlag == -1 || cloudInfo.imuAvailable == false)
+        if (deskewFlag == -1 || cloudInfo.imu_available == false)
             return *point;
 
         double pointTime = timeScanCur + relTime;
@@ -680,21 +687,26 @@ public:
     void publishClouds() {
         cloudInfo.header = cloudHeader;
         cloudInfo.cloud_deskewed  = publishCloud(pubExtractedCloud, fullCloud, cloudHeader.stamp, lidarFrame);
-        pubLaserCloudInfo.publish(cloudInfo);
+        pubLaserCloudInfo->publish(cloudInfo);
     }
 };
 
 int main(int argc, char** argv) {
-    ros::init(argc, argv, "liloc");
+    rclcpp::init(argc, argv);
+
+    rclcpp::NodeOptions options;
+    options.use_intra_process_comms(true);
+    rclcpp::executors::MultiThreadedExecutor exec;
 
     common_lib_ = std::make_shared<CommonLib::common_lib>("LiLoc");
 
-    ImageProjection IP;
+    auto IP = std::make_shared<ImageProjection>(options);
+    exec.add_node(IP);
     
-    ROS_INFO("\033[1;32m----> Image Projection Started.\033[0m");
+    RCLCPP_INFO(rclcpp::get_logger("rclcpp"), "\033[1;32m----> Image Projection Started.\033[0m");
 
-    ros::MultiThreadedSpinner spinner(3);
-    spinner.spin();
+    exec.spin();
     
+    rclcpp::shutdown();
     return 0;
 }

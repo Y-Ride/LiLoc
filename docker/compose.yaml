@@ -1,19 +1,19 @@
 services:
-  liloc:
+  liloc_ros2:
     build:
       context: ..
       dockerfile: docker/dockerfile
-    image: liloc
-    container_name: liloc
+    image: liloc_ros2
+    container_name: liloc_ros2
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix # Needed to display RViz within the container
-      - ../:/root/catkin_ws/src/liloc/
-      - ${HOME}/data_byu/bags:/root/catkin_ws/data_byu
-      - ${HOME}/data_sets:/root/catkin_ws/data_sets
+      - ../:/root/ros2_ws/src/liloc/
+      - ${HOME}/data_sets:/root/ros2_ws/data_sets
     environment:
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: all
       DISPLAY: "${DISPLAY}"
+      ROS_DOMAIN_ID: 36
     network_mode: host
     stdin_open: true
     tty: true

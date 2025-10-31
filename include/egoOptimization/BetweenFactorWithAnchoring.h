@@ -36,7 +36,7 @@ namespace gtsam {
   public:
 
     // shorthand for a smart pointer to a factor
-    typedef typename boost::shared_ptr<BetweenFactorWithAnchoring> shared_ptr;
+    typedef typename std::shared_ptr<BetweenFactorWithAnchoring> shared_ptr;
 
     /** default constructor - only use for serialization */
     BetweenFactorWithAnchoring() {}
@@ -54,7 +54,7 @@ namespace gtsam {
 
     /// @return a deep copy of this factor
     virtual gtsam::NonlinearFactor::shared_ptr clone() const {
-      return boost::static_pointer_cast<gtsam::NonlinearFactor>(
+      return std::static_pointer_cast<gtsam::NonlinearFactor>(
           gtsam::NonlinearFactor::shared_ptr(new This(*this))); }
 
     /** implement functions needed for Testable */
@@ -139,7 +139,7 @@ namespace gtsam {
   // template<class VALUE>
   // class BetweenConstraintGiseop : public BetweenFactorWithAnchoring<VALUE> {
   // public:
-  //   typedef boost::shared_ptr<BetweenConstraintGiseop<VALUE> > shared_ptr;
+  //   typedef std::shared_ptr<BetweenConstraintGiseop<VALUE> > shared_ptr;
 
   //   /** Syntactic sugar for constrained version */
   //   BetweenConstraintGiseop(const VALUE& measured, Key key1, Key key2, double mu = 1000.0) :

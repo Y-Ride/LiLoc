@@ -1,9 +1,9 @@
 #include "utility.h"
 #include "tictoc.h"
 
-#include "liloc/cloud_info.h"
-#include "liloc/save_map.h"
-#include "liloc/save_session.h"
+#include "liloc/msg/cloud_info.hpp"
+#include "liloc/srv/save_map.hpp"
+#include "liloc/srv/save_session.hpp"
 
 #include "dataManager/dataSaver.hpp"
 #include "dataManager/dataLoader.hpp"
@@ -24,30 +24,30 @@ public:
     gtsam::Values isamCurrentEstimate;
     Eigen::MatrixXd poseCovariance;
 
-    ros::Publisher pubLaserCloudSurround;
-    ros::Publisher pubLaserOdometryGlobal;
-    ros::Publisher pubLaserOdometryIncremental;
-    ros::Publisher pubKeyPoses;
-    ros::Publisher pubPath;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudSurround;
+    rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubLaserOdometryGlobal;
+    rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubLaserOdometryIncremental;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubKeyPoses;
+    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubPath;
 
-    ros::Publisher pubRecentKeyFrames;
-    ros::Publisher pubRecentKeyFrame;
-    ros::Publisher pubCloudRegisteredRaw;
-    ros::Publisher pubLocalVertexAndEdge;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubRecentKeyFrames;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubRecentKeyFrame;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubCloudRegisteredRaw;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pubLocalVertexAndEdge;
 
-    ros::Subscriber subCloud;
+    
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubPriorGlobalMap;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubPriorGlobalTrajectory;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubPriorLocalSubmap;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubPriorLocalSubmapCenteriod;
+    
+    rclcpp::Subscription<liloc::msg::CloudInfo>::SharedPtr subCloud;
+    rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr subPose;
+    
+    rclcpp::Service<liloc::srv::SaveMap>::SharedPtr srvSaveMap;
+    rclcpp::Service<liloc::srv::SaveSession>::SharedPtr srvSaveSession;
 
-    ros::Publisher pubPriorGlobalMap;
-    ros::Publisher pubPriorGlobalTrajectory;
-    ros::Publisher pubPriorLocalSubmap;
-    ros::Publisher pubPriorLocalSubmapCenteriod;
-
-    ros::Subscriber subPose;
-
-    ros::ServiceServer srvSaveMap;
-    ros::ServiceServer srvSaveSession;
-
-    liloc::cloud_info cloudInfo;
+    liloc::msg::CloudInfo cloudInfo;
 
     vector<pcl::PointCloud<PointType>::Ptr> surfCloudKeyFrames;
     
@@ -79,7 +79,7 @@ public:
     pcl::VoxelGrid<PointType> downSizeFilterLocalMapSurf;
     pcl::VoxelGrid<PointType> downSizeFilterSurroundingKeyPoses; // for surrounding key poses of scan-to-map optimization
     
-    ros::Time timeLaserInfoStamp;
+    rclcpp::Time timeLaserInfoStamp;
     double timeLaserInfoCur;
 
     float transformTobeMapped[6];
@@ -102,7 +102,7 @@ public:
 
     bool aLoopIsClosed = false;
 
-    nav_msgs::Path globalPath;
+    nav_msgs::msg::Path globalPath;
 
     Eigen::Affine3f transPointAssociateToMap;
     Eigen::Affine3f incrementalOdometryAffineFront;
@@ -123,54 +123,60 @@ public:
 
     std::vector<double> ros_time_tum;
 
-public:
+    std::unique_ptr<tf2_ros::TransformBroadcaster> br;
+    std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+    std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
     ~mapOptimization() { }
 
-    mapOptimization() {
+    mapOptimization(rclcpp::NodeOptions & options) : ParamServer("liloc_mapOptimization", options) {
         ISAM2Params parameters;
         parameters.relinearizeThreshold = 0.1;
         parameters.relinearizeSkip = 1;
         isam = new ISAM2(parameters);
 
-        pubKeyPoses                 = nh.advertise<sensor_msgs::PointCloud2>("liloc/mapping/trajectory", 1);
-        pubLaserCloudSurround       = nh.advertise<sensor_msgs::PointCloud2>("liloc/mapping/map_global", 1);
-        pubLaserOdometryGlobal      = nh.advertise<nav_msgs::Odometry> ("liloc/mapping/odometry", 1);
-        pubLaserOdometryIncremental = nh.advertise<nav_msgs::Odometry> ("liloc/mapping/odometry_incremental", 1);
-        pubPath                     = nh.advertise<nav_msgs::Path>("liloc/mapping/path", 1);
+        pubKeyPoses                 = create_publisher<sensor_msgs::msg::PointCloud2>("liloc/mapping/trajectory", 1);
+        pubLaserCloudSurround       = create_publisher<sensor_msgs::msg::PointCloud2>("liloc/mapping/map_global", 1);
+        pubLaserOdometryGlobal      = create_publisher<nav_msgs::msg::Odometry>("liloc/mapping/odometry", 1);
+        pubLaserOdometryIncremental = create_publisher<nav_msgs::msg::Odometry>("liloc/mapping/odometry_incremental", 1);
+        pubPath                     = create_publisher<nav_msgs::msg::Path>("liloc/mapping/path", 1);
 
-        subCloud = nh.subscribe<liloc::cloud_info>("liloc/deskew/cloud_info", 1, &mapOptimization::laserCloudInfoHandler, this, ros::TransportHints().tcpNoDelay());
-        subPose  = nh.subscribe("/initialpose", 8, &mapOptimization::initialposeHandler, this, ros::TransportHints().tcpNoDelay());
+        subCloud = create_subscription<liloc::msg::CloudInfo>("liloc/deskew/CloudInfo", 1, std::bind(&mapOptimization::laserCloudInfoHandler, this, std::placeholders::_1));
+        subPose  = create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>("/initialpose", 8, std::bind(&mapOptimization::initialposeHandler, this, std::placeholders::_1));
 
-        srvSaveMap  = nh.advertiseService("liloc/save_map", &mapOptimization::saveMapService, this);
-        srvSaveSession = nh.advertiseService("liloc/save_session", &mapOptimization::saveSessionService, this);
+        srvSaveMap  = create_service<liloc::srv::SaveMap>("liloc/SaveMap", std::bind(&mapOptimization::saveMapService, this, std::placeholders::_1, std::placeholders::_2));
+        srvSaveSession = create_service<liloc::srv::SaveSession>("liloc/SaveSession", std::bind(&mapOptimization::saveSessionService, this, std::placeholders::_1, std::placeholders::_2));
 
-        pubRecentKeyFrames    = nh.advertise<sensor_msgs::PointCloud2>("liloc/mapping/map_local", 1);
-        pubRecentKeyFrame     = nh.advertise<sensor_msgs::PointCloud2>("liloc/mapping/cloud_registered", 1);
-        pubCloudRegisteredRaw = nh.advertise<sensor_msgs::PointCloud2>("liloc/mapping/cloud_registered_raw", 1);
+        pubRecentKeyFrames    = create_publisher<sensor_msgs::msg::PointCloud2>("liloc/mapping/map_local", 1);
+        pubRecentKeyFrame     = create_publisher<sensor_msgs::msg::PointCloud2>("liloc/mapping/cloud_registered", 1);
+        pubCloudRegisteredRaw = create_publisher<sensor_msgs::msg::PointCloud2>("liloc/mapping/cloud_registered_raw", 1);
 
-        pubPriorGlobalMap                 = nh.advertise<sensor_msgs::PointCloud2>("liloc/prior/map_prior", 1);
-        pubPriorGlobalTrajectory          = nh.advertise<sensor_msgs::PointCloud2>("liloc/prior/traj_prior", 1);
-        pubPriorLocalSubmap               = nh.advertise<sensor_msgs::PointCloud2>("liloc/prior/submap_prior", 1);
-        pubPriorLocalSubmapCenteriod      = nh.advertise<sensor_msgs::PointCloud2>("liloc/prior/subcenter_prior", 1);
-        pubLocalVertexAndEdge             = nh.advertise<visualization_msgs::MarkerArray>("/liloc/prior/local_constrains", 1);
+        pubPriorGlobalMap                 = create_publisher<sensor_msgs::msg::PointCloud2>("liloc/prior/map_prior", 1);
+        pubPriorGlobalTrajectory          = create_publisher<sensor_msgs::msg::PointCloud2>("liloc/prior/traj_prior", 1);
+        pubPriorLocalSubmap               = create_publisher<sensor_msgs::msg::PointCloud2>("liloc/prior/submap_prior", 1);
+        pubPriorLocalSubmapCenteriod      = create_publisher<sensor_msgs::msg::PointCloud2>("liloc/prior/subcenter_prior", 1);
+        pubLocalVertexAndEdge             = create_publisher<visualization_msgs::msg::MarkerArray>("/liloc/prior/local_constrains", 1);
 
         downSizeFilterSurf.setLeafSize(mappingSurfLeafSize, mappingSurfLeafSize, mappingSurfLeafSize);
         downSizeFilterLocalMapSurf.setLeafSize(surroundingKeyframeMapLeafSize, surroundingKeyframeMapLeafSize, surroundingKeyframeMapLeafSize);
         downSizeFilterSurroundingKeyPoses.setLeafSize(surroundingKeyframeDensity, surroundingKeyframeDensity, surroundingKeyframeDensity); // for surrounding key poses of scan-to-map optimization
 
-        initialize();
+        // tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
+        // tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+        br = std::make_unique<tf2_ros::TransformBroadcaster>(this);
+
+        initialize(options);
 
         allocateMemory();
     }
 
-    void initialize() {
+    void initialize(rclcpp::NodeOptions & options) {
         if (mode == ModeType::LIO) {
             // data_saver.reset(new dataManager::DataSaver(savePCDDirectory, mode));
         }
         else if (mode == ModeType::RELO) {
             // data_saver.reset(new dataManager::DataSaver(savePCDDirectory, mode));
-            data_loader.reset(new dataManager::Session(1, "prior", savePCDDirectory, true));  // FIXME: must use "1"
+            data_loader.reset(new dataManager::Session(1, "prior", savePCDDirectory, true, options));  // FIXME: must use "1"
 
             pclomp::NormalDistributionsTransform<PointType, PointType>::Ptr ndt(new pclomp::NormalDistributionsTransform<PointType, PointType>());
             pclomp::GeneralizedIterativeClosestPoint<PointType, PointType>::Ptr gicp(new pclomp::GeneralizedIterativeClosestPoint<PointType, PointType>());
@@ -179,34 +185,34 @@ public:
             ndt->setResolution(ndtResolution);
 
             if (regMethod == "DIRECT1") {
-                ROS_INFO("Using NDT_OMP with DIRECT1.");
+                RCLCPP_INFO(this->get_logger(), "Using NDT_OMP with DIRECT1.");
                 ndt->setNeighborhoodSearchMethod(pclomp::DIRECT1);
                 registration = ndt;
             }
             else if (regMethod == "DIRECT7") {
-                ROS_INFO("Using NDT_OMP with DIRECT7.");
+                RCLCPP_INFO(this->get_logger(), "Using NDT_OMP with DIRECT7.");
                 ndt->setNeighborhoodSearchMethod(pclomp::DIRECT7);
                 registration = ndt;
             }
             else if (regMethod == "GICP_OMP") {
-                ROS_INFO("Using GICP_OMP.");
+                RCLCPP_INFO(this->get_logger(), "Using GICP_OMP.");
                 registration = gicp;
             }
             else if (regMethod == "KDTREE") {
-                ROS_INFO("Using NDT_OMP with KDTREE.");
+                RCLCPP_INFO(this->get_logger(), "Using NDT_OMP with KDTREE.");
                 ndt->setNeighborhoodSearchMethod(pclomp::KDTREE);
                 registration = ndt;
             }
             else {
-                ROS_ERROR("Invaild Registration Method !");
-                ros::shutdown();
+                RCLCPP_ERROR(this->get_logger(), "Invaild Registration Method !");
+                rclcpp::shutdown();
             }
 
             optimize.reset(new optimization::AnchorOptimization(data_loader, registration));
         }
         else {
-            ROS_ERROR(" Invaild Mode Type !");
-            ros::shutdown();
+            RCLCPP_ERROR(this->get_logger(), " Invaild Mode Type !");
+            rclcpp::shutdown();
         }
     }
 
@@ -243,11 +249,11 @@ public:
         matP = cv::Mat(6, 6, CV_32F, cv::Scalar::all(0));
     }
 
-    void laserCloudInfoHandler(const liloc::cloud_infoConstPtr& msgIn) {
+    void laserCloudInfoHandler(const liloc::msg::CloudInfo::SharedPtr msgIn) {
         static double timeLastProcessing = -1;
 
         timeLaserInfoStamp = msgIn->header.stamp;
-        timeLaserInfoCur = msgIn->header.stamp.toSec();
+        timeLaserInfoCur = ROS_TIME(msgIn->header.stamp);
 
         cloudInfo = *msgIn;
         pcl::fromROSMsg(msgIn->cloud_deskewed, *laserCloudSurfLast);
@@ -260,7 +266,7 @@ public:
 
         if (mode == ModeType::RELO && !poseInitialized) {
             if (!systemInitialized) {
-                ROS_WARN("Wait for Initialized Pose ...");
+                RCLCPP_INFO_ONCE(this->get_logger(), "Wait for Initialized Pose ...");
                 return ;
             }
             else {
@@ -329,8 +335,8 @@ public:
             saveLIOKeyFramesAndFactor();
         }
         else {
-            ROS_ERROR("Invaild Mode Type. Please use 'LIO' or 'RELO' ... ");
-            ros::shutdown();
+            RCLCPP_ERROR(this->get_logger(), "Invaild Mode Type. Please use 'LIO' or 'RELO' ... ");
+            rclcpp::shutdown();
         }
 
 
@@ -417,21 +423,34 @@ public:
     }
 
 
-    bool saveMapService(liloc::save_mapRequest& req, liloc::save_mapResponse& res) {
+    bool saveMapService(std::shared_ptr<liloc::srv::SaveMap::Request> req, std::shared_ptr<liloc::srv::SaveMap::Response> res) {
         string saveMapDirectory;
 
         cout << "****************************************************" << endl;
-        cout << "Saving map to pcd files ..." << endl;
+        cout << "       Saving map to pcd files ..." << endl;
+        cout << "****************************************************" << endl;
 
         saveMapDirectory = savePCDDirectory;
 
         std::cout << "Save destination: " << saveMapDirectory << endl;
 
         // create directory and remove old files;
-        int unused = system((std::string("exec rm -r ") + saveMapDirectory).c_str());
-        unused = system((std::string("mkdir -p ") + saveMapDirectory).c_str());
+        if (fs::exists(saveMapDirectory))
+        {
+            std::error_code ec;
+            fs::remove_all(saveMapDirectory, ec);
+            if (ec)
+            {
+                RCLCPP_ERROR(this->get_logger(), "Failed to remove %s. Can't save map.", saveMapDirectory.c_str());
+                return false;
+            }
+        }
 
-        if (req.savepath == 1) {
+        fs::create_directories(saveMapDirectory);
+        std::string savePcdDirectory = saveMapDirectory + "/PCDs";
+        fs::create_directories(savePcdDirectory);
+
+        if (req->savepath == 1) {
             pgSaveStream = std::fstream(saveMapDirectory + "/singlesession_posegraph.g2o", std::fstream::out);
 
             // save key frame transformations
@@ -491,24 +510,22 @@ public:
 
         }
 
-        if (req.savecloud == 1) {
-            std::string savePcdDirectory = saveMapDirectory + "/PCDs";
-            unused = system((std::string("mkdir -p ") + savePcdDirectory).c_str());
+        if (req->savecloud == 1) {
 
             pcl::PointCloud<PointType>::Ptr surfCloud(new pcl::PointCloud<PointType>());
             pcl::PointCloud<PointType>::Ptr surfCloudDS(new pcl::PointCloud<PointType>());
             pcl::PointCloud<PointType>::Ptr globalMapCloud(new pcl::PointCloud<PointType>());
             pcl::PointCloud<PointType>::Ptr globalMapCloudDS(new pcl::PointCloud<PointType>());
 
-            if (req.resolution != 0) {
-                cout << "\n\nSave resolution: " << req.resolution << endl;
-                downSizeFilterSurf.setLeafSize(req.resolution, req.resolution, req.resolution);
+            if (req->resolution != 0) {
+                cout << "\n\nSave resolution: " << req->resolution << endl;
+                downSizeFilterSurf.setLeafSize(req->resolution, req->resolution, req->resolution);
             }
 
             for (int i = 0; i < (int)cloudKeyPoses3D->size(); i++) {
                 surfCloud = surfCloudKeyFrames[i];
 
-                if (req.resolution != 0) {
+                if (req->resolution != 0) {
                     downSizeFilterSurf.setInputCloud(surfCloud);
                     downSizeFilterSurf.filter(*surfCloudDS);
                 }
@@ -520,7 +537,7 @@ public:
             }
             cout << "Processing feature cloud: " << cloudKeyPoses6D->size() << endl;
         
-            if (req.resolution != 0) {
+            if (req->resolution != 0) {
                 downSizeFilterSurf.setInputCloud(globalMapCloud);
                 downSizeFilterSurf.filter(*globalMapCloudDS);
             }
@@ -530,38 +547,49 @@ public:
 
         int ret = 1;
 
-        res.success = (ret == 1);
+        res->success = (ret == 1);
 
         downSizeFilterSurf.setLeafSize(mappingSurfLeafSize, mappingSurfLeafSize, mappingSurfLeafSize);
 
-        cout << "****************************************************" << endl;
-        cout << "Saving map to pcd files completed\n" << endl;
+        cout << "*****************************************************" << endl;
+        cout << "       Saving map to pcd files completed" << endl;
+        cout << "*****************************************************" << endl << endl;
 
 
         return true;
     }
 
-    bool saveSessionService(liloc::save_sessionRequest& req, liloc::save_sessionResponse& res) {
+    bool saveSessionService(std::shared_ptr<liloc::srv::SaveSession::Request> req, std::shared_ptr<liloc::srv::SaveSession::Response> res) {
 
         if (mode != ModeType::RELO) {
-            ROS_ERROR("Not RELO Mode, Can't Save Session !");
+            RCLCPP_ERROR(this->get_logger(), "Not RELO Mode, Can't Save Session !");
             return false;
         }
 
         std::string saveSessionDir;
 
         cout << "****************************************************" << endl;
-        cout << "Saving session to pcd files ..." << endl;
+        cout << "       Saving session to pcd files ..." << endl;
+        cout << "****************************************************" << endl;
 
         saveSessionDir = saveSessionDirectory;
 
         std::cout << "Save destination: " << saveSessionDir << endl;
 
-        int unused = system((std::string("exec rm -r ") + saveSessionDir).c_str());
-        unused = system((std::string("mkdir -p ") + saveSessionDir).c_str());
-
         std::string savePcdDirectory = saveSessionDir + "/PCDs";
-        unused = system((std::string("mkdir -p ") + savePcdDirectory).c_str());
+        if (fs::exists(saveSessionDir))
+        {
+            std::error_code ec;
+            fs::remove_all(saveSessionDir, ec);
+            if (ec)
+            {
+                RCLCPP_ERROR(this->get_logger(), "Failed to remove %s. Can't save session.", saveSessionDir.c_str());
+                return false;
+            }
+        }
+
+        fs::create_directories(saveSessionDir);
+        fs::create_directories(savePcdDirectory);
 
         pgSaveStream = std::fstream(saveSessionDir + "/singlesession_posegraph.g2o", std::fstream::out);
 
@@ -593,15 +621,15 @@ public:
         pcl::PointCloud<PointType>::Ptr globalMapCloud(new pcl::PointCloud<PointType>());
         pcl::PointCloud<PointType>::Ptr globalMapCloudDS(new pcl::PointCloud<PointType>());
 
-        if (req.resolution != 0) {
-            cout << "\n\nSave resolution: " << req.resolution << endl;
-            downSizeFilterSurf.setLeafSize(req.resolution, req.resolution, req.resolution);
+        if (req->resolution != 0) {
+            cout << "\n\nSave resolution: " << req->resolution << endl;
+            downSizeFilterSurf.setLeafSize(req->resolution, req->resolution, req->resolution);
         }
 
         for (size_t i = 0; i < data_loader->KeyPoses6D_->size(); i++) {
             surfCloud = data_loader->keyCloudVec_[i];
 
-            if (req.resolution != 0) {
+            if (req->resolution != 0) {
                 downSizeFilterSurf.setInputCloud(surfCloud);
                 downSizeFilterSurf.filter(*surfCloudDS);
             }
@@ -613,7 +641,7 @@ public:
         }
         cout << "Processing feature cloud: " << data_loader->KeyPoses6D_->size() << endl;
 
-        if (req.resolution != 0) {
+        if (req->resolution != 0) {
             downSizeFilterSurf.setInputCloud(globalMapCloud);
             downSizeFilterSurf.filter(*globalMapCloudDS);
         }
@@ -622,12 +650,13 @@ public:
 
         int ret = 1;
 
-        res.success = (ret == 1);
+        res->success = (ret == 1);
 
         downSizeFilterSurf.setLeafSize(mappingSurfLeafSize, mappingSurfLeafSize, mappingSurfLeafSize);
 
         cout << "****************************************************" << endl;
-        cout << "Saving map to pcd files completed\n" << endl;
+        cout << "       Saving map to pcd files completed" << endl;
+        cout << "****************************************************" << endl << endl;
 
         pgSaveStream.close();
 
@@ -635,8 +664,8 @@ public:
     }
 
     void visualizeGlobalMapThread() {
-        ros::Rate rate(1);
-        while (ros::ok()){
+        rclcpp::Rate rate(1);
+        while (rclcpp::ok()){
             rate.sleep();
             publishGlobalMap();
         }
@@ -686,8 +715,8 @@ public:
     void displayTime() {
         cv::namedWindow("Processing Times", cv::WINDOW_AUTOSIZE);
 
-        ros::Rate rate(1);
-        while (ros::ok()) {
+        rclcpp::Rate rate(1);
+        while (rclcpp::ok()) {
             rate.sleep();
 
             drawLinePlot(total_time, reg_time, opt_time, "Processing Times");
@@ -700,19 +729,15 @@ public:
         downSizeFilterGlobalMapKeyFrames.setLeafSize(globalMapVisualizationLeafSize, globalMapVisualizationLeafSize, globalMapVisualizationLeafSize); // for global map visualization
 
         if (mode == ModeType::RELO) {
-            // ROS_INFO("Publishing Prior GlobalMap");
             publishCloud(pubPriorGlobalMap, data_loader->globalMap_, timeLaserInfoStamp, mapFrame);
-            // ROS_INFO("Publishing Prior GlobalTrajectory");
             publishCloud(pubPriorGlobalTrajectory, data_loader->KeyPoses6D_, timeLaserInfoStamp, mapFrame);
-            // ROS_INFO("Publishing Prior LocalSubmap");
             publishCloud(pubPriorLocalSubmap, data_loader->usingSubMap_, timeLaserInfoStamp, mapFrame);
-            // ROS_INFO("Publishing Prior LocalSubmapCenteriod");
             publishCloud(pubPriorLocalSubmapCenteriod, data_loader->SubMapCenteriod_, timeLaserInfoStamp, mapFrame);
         
             visualizeLocalVertexAndEdge();
         }
         
-        if (pubLaserCloudSurround.getNumSubscribers() == 0)
+        if (pubLaserCloudSurround->get_subscription_count() == 0)
             return;
 
         if (cloudKeyPoses3D->points.empty() == true)
@@ -756,8 +781,8 @@ public:
         publishCloud(pubLaserCloudSurround, globalMapKeyFramesDS, timeLaserInfoStamp, odometryFrame);
     }
 
-    void initialposeHandler(const geometry_msgs::PoseWithCovarianceStampedConstPtr& poseMsg) {
-        ROS_INFO("Initial pose received .");
+    void initialposeHandler(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr poseMsg) {
+        RCLCPP_INFO(this->get_logger(), "Initial pose received .");
 
         const auto& p = poseMsg->pose.pose.position;
         const auto& q = poseMsg->pose.pose.orientation;
@@ -782,14 +807,14 @@ public:
             return ;
         }
 
-        visualization_msgs::MarkerArray markerArray;
+        visualization_msgs::msg::MarkerArray markerArray;
 
         // loop nodes
-        visualization_msgs::Marker markerNode;
+        visualization_msgs::msg::Marker markerNode;
         markerNode.header.frame_id = odometryFrame;
         markerNode.header.stamp = timeLaserInfoStamp;
-        markerNode.action = visualization_msgs::Marker::ADD;
-        markerNode.type = visualization_msgs::Marker::SPHERE_LIST;
+        markerNode.action = visualization_msgs::msg::Marker::ADD;
+        markerNode.type = visualization_msgs::msg::Marker::SPHERE_LIST;
         markerNode.ns = "vertex";
         markerNode.id = 0;
         markerNode.pose.orientation.w = 1;
@@ -798,11 +823,11 @@ public:
         markerNode.color.a = 1;
 
         // loop edges
-        visualization_msgs::Marker markerEdge;
+        visualization_msgs::msg::Marker markerEdge;
         markerEdge.header.frame_id = odometryFrame;
         markerEdge.header.stamp = timeLaserInfoStamp;
-        markerEdge.action = visualization_msgs::Marker::ADD;
-        markerEdge.type = visualization_msgs::Marker::LINE_LIST;
+        markerEdge.action = visualization_msgs::msg::Marker::ADD;
+        markerEdge.type = visualization_msgs::msg::Marker::LINE_LIST;
         markerEdge.ns = "edge";
         markerEdge.id = 1;
         markerEdge.pose.orientation.w = 1;
@@ -812,8 +837,8 @@ public:
 
         PointTypePose cur_pose = trans2PointTypePose(transformTobeMapped);
 
-        for (int i = 0; i < data_loader->usingVertexes_->size(); i++) {
-            geometry_msgs::Point p;
+        for (int i = 0; i < (int)data_loader->usingVertexes_->size(); i++) {
+            geometry_msgs::msg::Point p;
             p.x = cur_pose.x;
             p.y = cur_pose.y;
             p.z = cur_pose.z;
@@ -829,7 +854,7 @@ public:
 
         markerArray.markers.push_back(markerNode);
         markerArray.markers.push_back(markerEdge);
-        pubLocalVertexAndEdge.publish(markerArray);
+        pubLocalVertexAndEdge->publish(markerArray);
     }
 
     void updateInitialGuess() {
@@ -838,14 +863,14 @@ public:
         static Eigen::Affine3f lastImuTransformation;
         if (cloudKeyPoses3D->points.empty()) {
             if (mode == ModeType::LIO) {
-                transformTobeMapped[0] = cloudInfo.imuRollInit;
-                transformTobeMapped[1] = cloudInfo.imuPitchInit;
-                transformTobeMapped[2] = cloudInfo.imuYawInit;
+                transformTobeMapped[0] = cloudInfo.imu_roll_init;
+                transformTobeMapped[1] = cloudInfo.imu_pitch_init;
+                transformTobeMapped[2] = cloudInfo.imu_yaw_init;
 
-                lastImuTransformation = pcl::getTransformation(0, 0, 0, cloudInfo.imuRollInit, cloudInfo.imuPitchInit, cloudInfo.imuYawInit); // save imu before return;
+                lastImuTransformation = pcl::getTransformation(0, 0, 0, cloudInfo.imu_roll_init, cloudInfo.imu_pitch_init, cloudInfo.imu_yaw_init); // save imu before return;
             }
             else if (mode == ModeType::RELO) {
-                Eigen::Affine3f transImuInit = pcl::getTransformation(0, 0, 0, cloudInfo.initialGuessRoll, cloudInfo.initialGuessPitch, cloudInfo.initialGuessYaw);
+                Eigen::Affine3f transImuInit = pcl::getTransformation(0, 0, 0, cloudInfo.initial_guess_roll, cloudInfo.initial_guess_pitch, cloudInfo.initial_guess_yaw);
                 Eigen::Affine3f transCbInit = pcl::getTransformation(transformTobeMappedInit[3], transformTobeMappedInit[4], transformTobeMappedInit[5], 
                                                                      transformTobeMappedInit[0], transformTobeMappedInit[1], transformTobeMappedInit[2]);
                 
@@ -856,8 +881,8 @@ public:
                 lastImuTransformation = pcl::getTransformation(0, 0, 0, transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]); 
             }
             else {
-                ROS_ERROR("Ivaild mode type !");
-                ros::shutdown();
+                RCLCPP_ERROR(this->get_logger(), "Ivaild mode type !");
+                rclcpp::shutdown();
             }
             
             return;
@@ -866,9 +891,9 @@ public:
         // use imu pre-integration estimation for pose guess
         static bool lastImuPreTransAvailable = false;
         static Eigen::Affine3f lastImuPreTransformation;
-        if (cloudInfo.odomAvailable == true) {
-            Eigen::Affine3f transBack = pcl::getTransformation(cloudInfo.initialGuessX,    cloudInfo.initialGuessY,     cloudInfo.initialGuessZ, 
-                                                               cloudInfo.initialGuessRoll, cloudInfo.initialGuessPitch, cloudInfo.initialGuessYaw);
+        if (cloudInfo.odom_available == true) {
+            Eigen::Affine3f transBack = pcl::getTransformation(cloudInfo.initial_guess_x,    cloudInfo.initial_guess_y,     cloudInfo.initial_guess_z, 
+                                                               cloudInfo.initial_guess_roll, cloudInfo.initial_guess_pitch, cloudInfo.initial_guess_yaw);
             if (lastImuPreTransAvailable == false) {
                 lastImuPreTransformation = transBack;
                 lastImuPreTransAvailable = true;
@@ -882,15 +907,15 @@ public:
 
                 lastImuPreTransformation = transBack;
 
-                lastImuTransformation = pcl::getTransformation(0, 0, 0, cloudInfo.imuRollInit, cloudInfo.imuPitchInit, cloudInfo.imuYawInit); // save imu before return;
+                lastImuTransformation = pcl::getTransformation(0, 0, 0, cloudInfo.imu_roll_init, cloudInfo.imu_pitch_init, cloudInfo.imu_yaw_init); // save imu before return;
                 return;
             }
         }
 
         // use imu incremental estimation for pose guess (only rotation)
-        if (cloudInfo.imuAvailable == true && imuType)
+        if (cloudInfo.imu_available == true && imuType)
         {
-            Eigen::Affine3f transBack = pcl::getTransformation(0, 0, 0, cloudInfo.imuRollInit, cloudInfo.imuPitchInit, cloudInfo.imuYawInit);
+            Eigen::Affine3f transBack = pcl::getTransformation(0, 0, 0, cloudInfo.imu_roll_init, cloudInfo.imu_pitch_init, cloudInfo.imu_yaw_init);
             Eigen::Affine3f transIncre = lastImuTransformation.inverse() * transBack;
 
             Eigen::Affine3f transTobe = trans2Affine3f(transformTobeMapped);
@@ -898,7 +923,7 @@ public:
             pcl::getTranslationAndEulerAngles(transFinal, transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5], 
                                                         transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]);
 
-            lastImuTransformation = pcl::getTransformation(0, 0, 0, cloudInfo.imuRollInit, cloudInfo.imuPitchInit, cloudInfo.imuYawInit); // save imu before return;
+            lastImuTransformation = pcl::getTransformation(0, 0, 0, cloudInfo.imu_roll_init, cloudInfo.imu_pitch_init, cloudInfo.imu_yaw_init); // save imu before return;
             return;
         }
     }
@@ -1206,26 +1231,26 @@ public:
             transformUpdate();
         } 
         else {
-            ROS_WARN("Not enough features! Only %d planar features available.", laserCloudSurfLastDSNum);
+            RCLCPP_WARN(this->get_logger(), "Not enough features! Only %d planar features available.", laserCloudSurfLastDSNum);
         }
     }
 
     void transformUpdate() {
-        if (cloudInfo.imuAvailable == true && imuType) {
-            if (std::abs(cloudInfo.imuPitchInit) < 1.4) {
+        if (cloudInfo.imu_available == true && imuType) {
+            if (std::abs(cloudInfo.imu_pitch_init) < 1.4) {
                 double imuWeight = imuRPYWeight;
-                tf::Quaternion imuQuaternion;
-                tf::Quaternion transformQuaternion;
+                tf2::Quaternion imuQuaternion;
+                tf2::Quaternion transformQuaternion;
                 double rollMid, pitchMid, yawMid;
 
                 transformQuaternion.setRPY(transformTobeMapped[0], 0, 0);
-                imuQuaternion.setRPY(cloudInfo.imuRollInit, 0, 0);
-                tf::Matrix3x3(transformQuaternion.slerp(imuQuaternion, imuWeight)).getRPY(rollMid, pitchMid, yawMid);
+                imuQuaternion.setRPY(cloudInfo.imu_roll_init, 0, 0);
+                tf2::Matrix3x3(transformQuaternion.slerp(imuQuaternion, imuWeight)).getRPY(rollMid, pitchMid, yawMid);
                 transformTobeMapped[0] = rollMid;
 
                 transformQuaternion.setRPY(0, transformTobeMapped[1], 0);
-                imuQuaternion.setRPY(0, cloudInfo.imuPitchInit, 0);
-                tf::Matrix3x3(transformQuaternion.slerp(imuQuaternion, imuWeight)).getRPY(rollMid, pitchMid, yawMid);
+                imuQuaternion.setRPY(0, cloudInfo.imu_pitch_init, 0);
+                tf2::Matrix3x3(transformQuaternion.slerp(imuQuaternion, imuWeight)).getRPY(rollMid, pitchMid, yawMid);
                 transformTobeMapped[1] = pitchMid;
             }
         }
@@ -1495,14 +1520,14 @@ public:
     }
 
     void updatePath(const PointTypePose& pose_in) {
-        geometry_msgs::PoseStamped pose_stamped;
-        pose_stamped.header.stamp = ros::Time().fromSec(pose_in.time);
+        geometry_msgs::msg::PoseStamped pose_stamped;
+        pose_stamped.header.stamp = rclcpp::Time(pose_in.time);
         pose_stamped.header.frame_id = odometryFrame;
         pose_stamped.pose.position.x = pose_in.x;
         pose_stamped.pose.position.y = pose_in.y;
         pose_stamped.pose.position.z = pose_in.z;
-        tf::Quaternion q = tf::createQuaternionFromRPY(pose_in.roll, pose_in.pitch, pose_in.yaw);
-        q.normalize();
+        tf2::Quaternion q;
+        q.setRPY(pose_in.roll, pose_in.pitch, pose_in.yaw);
         pose_stamped.pose.orientation.x = q.x();
         pose_stamped.pose.orientation.y = q.y();
         pose_stamped.pose.orientation.z = q.z();
@@ -1513,26 +1538,33 @@ public:
 
     void publishOdometry() {
         // Publish odometry for ROS (global)
-        nav_msgs::Odometry laserOdometryROS;
+        nav_msgs::msg::Odometry laserOdometryROS;
         laserOdometryROS.header.stamp = timeLaserInfoStamp;
         laserOdometryROS.header.frame_id = odometryFrame;
         laserOdometryROS.child_frame_id = "odom_mapping";
         laserOdometryROS.pose.pose.position.x = transformTobeMapped[3];
         laserOdometryROS.pose.pose.position.y = transformTobeMapped[4];
         laserOdometryROS.pose.pose.position.z = transformTobeMapped[5];
-        laserOdometryROS.pose.pose.orientation = tf::createQuaternionMsgFromRollPitchYaw(transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]);
-        pubLaserOdometryGlobal.publish(laserOdometryROS);
+        tf2::Quaternion quat_tf;
+        quat_tf.setRPY(transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]);
+        geometry_msgs::msg::Quaternion quat_msg;
+        tf2::convert(quat_tf, quat_msg);
+        laserOdometryROS.pose.pose.orientation = quat_msg;
+        pubLaserOdometryGlobal->publish(laserOdometryROS);
         
         // Publish TF
-        static tf::TransformBroadcaster br;
-        tf::Transform t_odom_to_lidar = tf::Transform(tf::createQuaternionFromRPY(transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]),
-                                                      tf::Vector3(transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5]));
-        tf::StampedTransform trans_odom_to_lidar = tf::StampedTransform(t_odom_to_lidar, timeLaserInfoStamp, odometryFrame, "lidar_link");
-        br.sendTransform(trans_odom_to_lidar);
+        
+        tf2::Transform t_odom_to_lidar = tf2::Transform(quat_tf, tf2::Vector3(transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5]));
+        tf2::TimePoint time_point = tf2_ros::fromRclcpp(timeLaserInfoStamp);
+        tf2::Stamped<tf2::Transform> temp_odom_to_lidar(t_odom_to_lidar, time_point, odometryFrame);
+        geometry_msgs::msg::TransformStamped trans_odom_to_lidar;
+        tf2::convert(temp_odom_to_lidar, trans_odom_to_lidar);
+        trans_odom_to_lidar.child_frame_id = "lidar_link";
+        br->sendTransform(trans_odom_to_lidar);
 
         // Publish odometry for ROS (incremental)
         static bool lastIncreOdomPubFlag = false;
-        static nav_msgs::Odometry laserOdomIncremental; // incremental odometry msg
+        static nav_msgs::msg::Odometry laserOdomIncremental; // incremental odometry msg
         static Eigen::Affine3f increOdomAffine; // incremental odometry in affine
         if (lastIncreOdomPubFlag == false) {
             lastIncreOdomPubFlag = true;
@@ -1546,23 +1578,23 @@ public:
             float x, y, z, roll, pitch, yaw;
             pcl::getTranslationAndEulerAngles (increOdomAffine, x, y, z, roll, pitch, yaw);
 
-            if (cloudInfo.imuAvailable == true && imuType) {
-                if (std::abs(cloudInfo.imuPitchInit) < 1.4) {
+            if (cloudInfo.imu_available == true && imuType) {
+                if (std::abs(cloudInfo.imu_pitch_init) < 1.4) {
                     double imuWeight = 0.1;
-                    tf::Quaternion imuQuaternion;
-                    tf::Quaternion transformQuaternion;
+                    tf2::Quaternion imuQuaternion;
+                    tf2::Quaternion transformQuaternion;
                     double rollMid, pitchMid, yawMid;
 
                     // slerp roll
                     transformQuaternion.setRPY(roll, 0, 0);
-                    imuQuaternion.setRPY(cloudInfo.imuRollInit, 0, 0);
-                    tf::Matrix3x3(transformQuaternion.slerp(imuQuaternion, imuWeight)).getRPY(rollMid, pitchMid, yawMid);
+                    imuQuaternion.setRPY(cloudInfo.imu_roll_init, 0, 0);
+                    tf2::Matrix3x3(transformQuaternion.slerp(imuQuaternion, imuWeight)).getRPY(rollMid, pitchMid, yawMid);
                     roll = rollMid;
 
                     // slerp pitch
                     transformQuaternion.setRPY(0, pitch, 0);
-                    imuQuaternion.setRPY(0, cloudInfo.imuPitchInit, 0);
-                    tf::Matrix3x3(transformQuaternion.slerp(imuQuaternion, imuWeight)).getRPY(rollMid, pitchMid, yawMid);
+                    imuQuaternion.setRPY(0, cloudInfo.imu_pitch_init, 0);
+                    tf2::Matrix3x3(transformQuaternion.slerp(imuQuaternion, imuWeight)).getRPY(rollMid, pitchMid, yawMid);
                     pitch = pitchMid;
                 }
             }
@@ -1573,7 +1605,11 @@ public:
             laserOdomIncremental.pose.pose.position.x = x;
             laserOdomIncremental.pose.pose.position.y = y;
             laserOdomIncremental.pose.pose.position.z = z;
-            laserOdomIncremental.pose.pose.orientation = tf::createQuaternionMsgFromRollPitchYaw(roll, pitch, yaw);
+            tf2::Quaternion quat_tf;
+            quat_tf.setRPY(roll, pitch, yaw);
+            geometry_msgs::msg::Quaternion quat_msg;
+            tf2::convert(quat_tf, quat_msg);
+            laserOdomIncremental.pose.pose.orientation = quat_msg;
 
             if (isDegenerate)
                 laserOdomIncremental.pose.covariance[0] = 1;
@@ -1581,7 +1617,7 @@ public:
                 laserOdomIncremental.pose.covariance[0] = 0;
         }
 
-        pubLaserOdometryIncremental.publish(laserOdomIncremental);
+        pubLaserOdometryIncremental->publish(laserOdomIncremental);
     }
 
     void publishFrames() {
@@ -1595,7 +1631,7 @@ public:
         publishCloud(pubRecentKeyFrames, laserCloudSurfFromMapDS, timeLaserInfoStamp, odometryFrame);
 
         // publish registered key frame
-        if (pubRecentKeyFrame.getNumSubscribers() != 0) {
+        if (pubRecentKeyFrame->get_subscription_count() != 0) {
             pcl::PointCloud<PointType>::Ptr cloudOut(new pcl::PointCloud<PointType>());
             PointTypePose thisPose6D = trans2PointTypePose(transformTobeMapped);
             *cloudOut += *transformPointCloud(laserCloudSurfLastDS,    &thisPose6D);
@@ -1603,7 +1639,7 @@ public:
         }
 
         // publish registered high-res raw cloud
-        if (pubCloudRegisteredRaw.getNumSubscribers() != 0) {
+        if (pubCloudRegisteredRaw->get_subscription_count() != 0) {
             pcl::PointCloud<PointType>::Ptr cloudOut(new pcl::PointCloud<PointType>());
             pcl::fromROSMsg(cloudInfo.cloud_deskewed, *cloudOut);
             PointTypePose thisPose6D = trans2PointTypePose(transformTobeMapped);
@@ -1612,28 +1648,35 @@ public:
         }
 
         // publish path
-        if (pubPath.getNumSubscribers() != 0) {
+        if (pubPath->get_subscription_count() != 0) {
             globalPath.header.stamp = timeLaserInfoStamp;
             globalPath.header.frame_id = odometryFrame;
-            pubPath.publish(globalPath);
+            pubPath->publish(globalPath);
         }
     }
 };
 
 
 int main(int argc, char** argv) {
-    ROS_INFO("\033[1;32m----> Map Optimization Started.\033[0m");
-    ros::init(argc, argv, "liloc");
-
-    mapOptimization MO;
+    rclcpp::init(argc, argv);
     
-    std::thread visualizeMapThread(&mapOptimization::visualizeGlobalMapThread, &MO);
+    rclcpp::NodeOptions options;
+    options.use_intra_process_comms(true);
+    rclcpp::executors::SingleThreadedExecutor exec;
+    
+    auto MO = std::make_shared<mapOptimization>(options);
+    exec.add_node(MO);
+    
+    std::thread visualizeMapThread(&mapOptimization::visualizeGlobalMapThread, MO);
     // std::thread visualizeTimeThread(&mapOptimization::displayTime, &MO);
-
-    ros::spin();
+    
+    RCLCPP_INFO(rclcpp::get_logger("rclcpp"), "\033[1;32m----> Map Optimization Started.\033[0m");
+    
+    exec.spin();
 
     visualizeMapThread.join();
     // visualizeTimeThread.join();
 
+    rclcpp::shutdown();
     return 0;
 }

@@ -5,19 +5,19 @@
 
 #define PCL_NO_PRECOMPILE 
 
-#include <ros/ros.h>
+#include <rclcpp/rclcpp.hpp>
 
-#include <std_msgs/Header.h>
-#include <std_msgs/Float64MultiArray.h>
-#include <sensor_msgs/Imu.h>
-#include <sensor_msgs/PointCloud2.h>
-#include <sensor_msgs/NavSatFix.h>
-#include <nav_msgs/Odometry.h>
-#include <nav_msgs/Path.h>
+#include <std_msgs/msg/header.hpp>
+#include <std_msgs/msg/float64_multi_array.hpp>
+#include <sensor_msgs/msg/imu.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <sensor_msgs/msg/nav_sat_fix.hpp>
+#include <nav_msgs/msg/odometry.hpp>
+#include <nav_msgs/msg/path.hpp>
 #include <common_lib.h>
-#include <visualization_msgs/Marker.h>
-#include <visualization_msgs/MarkerArray.h>
-#include <geometry_msgs/PoseWithCovarianceStamped.h>
+#include <visualization_msgs/msg/marker.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
+#include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -35,10 +35,13 @@
 
 #include <opencv2/opencv.hpp>
 
-#include <tf/LinearMath/Quaternion.h>
-#include <tf/transform_listener.h>
-#include <tf/transform_datatypes.h>
-#include <tf/transform_broadcaster.h>
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2_ros/transform_listener.h>
+#include <tf2_ros/transform_broadcaster.h>
+// #include <tf2/transform_datatypes.h>
+#include <tf2_eigen/tf2_eigen.hpp>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <tf2_ros/static_transform_broadcaster.h>
 
 #include <gtsam/geometry/Rot3.h>
 #include <gtsam/geometry/Pose3.h>
@@ -54,7 +57,7 @@
 #include <gtsam/inference/Symbol.h>
 
 #include <gtsam/nonlinear/ISAM2.h>
-#include <gtsam_unstable/nonlinear/IncrementalFixedLagSmoother.h>
+#include <gtsam/nonlinear/IncrementalFixedLagSmoother.h>
  
 #include <vector>
 #include <cmath>
@@ -73,8 +76,16 @@
 #include <array>
 #include <thread>
 #include <mutex>
+#include <unordered_map>
+
+#include <filesystem>
+namespace fs = std::filesystem;
 
 #include "math_tools.h"
+
+#define UTILITY_DECLARE_GET_PARAM(TYPE, NAME, VAR, DEFAULT) \
+    declare_parameter<TYPE>(NAME, DEFAULT); \
+    get_parameter(NAME, VAR);
 
 using gtsam::symbol_shorthand::X; // Pose3 (x, y, z, r, p, y)
 using gtsam::symbol_shorthand::V; // Vel   (xdot, ydot, zdot)
@@ -114,10 +125,9 @@ const static inline int kSessionStartIdxOffset = 1000000; // int max 2147483647 
 
 const double kAccScale = 9.80665;
 
-class ParamServer {
+class ParamServer : public rclcpp::Node 
+{
 public:
-    ros::NodeHandle nh;
-
     std::string pointCloudTopic;
     std::string imuTopic;
     std::string odomTopic;
@@ -190,15 +200,19 @@ public:
     float globalMapVisualizationPoseDensity;
     float globalMapVisualizationLeafSize;
 
+    std::string history_policy;
+    std::string reliability_policy;
+
     ~ParamServer() { }
 
-    ParamServer() {
-        nh.param<std::string>("System/pointCloudTopic", pointCloudTopic, "points_raw");
-        nh.param<std::string>("System/imuTopic", imuTopic, "imu_correct");
-        nh.param<std::string>("System/odomTopic", odomTopic, "odometry/imu");
+    ParamServer(std::string node_name, const rclcpp::NodeOptions & options) : Node(node_name, options) 
+    {
+        UTILITY_DECLARE_GET_PARAM(std::string, "System.pointCloudTopic", pointCloudTopic, "points_raw");
+        UTILITY_DECLARE_GET_PARAM(std::string, "System.imuTopic", imuTopic, "imu_correct");
+        UTILITY_DECLARE_GET_PARAM(std::string, "System.odomTopic", odomTopic, "odometry/imu");
 
         std::string modeStr;
-        nh.param<std::string>("System/mode", modeStr, "lio");
+        UTILITY_DECLARE_GET_PARAM(std::string, "System.mode", modeStr, "lio");
         if (modeStr == "lio") {
             mode = ModeType::LIO;
         }
@@ -206,22 +220,22 @@ public:
             mode = ModeType::RELO;
         }
         else {
-            ROS_ERROR_STREAM("Invalid Mode Type (must be either 'lio' or 'relo'): " << modeStr);
-            ros::shutdown();
+            RCLCPP_ERROR(this->get_logger(), "Invalid Mode Type (must be either 'lio' or 'relo'): %s", modeStr.c_str());
+            rclcpp::shutdown();
         }
 
-        nh.param<int>("System/numberOfCores", numberOfCores, 4);
+        UTILITY_DECLARE_GET_PARAM(int, "System.numberOfCores", numberOfCores, 4);
 
-        nh.param<std::string>("System/lidarFrame", lidarFrame, "base_link");
-        nh.param<std::string>("System/baselinkFrame", baselinkFrame, "base_link");
-        nh.param<std::string>("System/odometryFrame", odometryFrame, "odom");
-        nh.param<std::string>("System/mapFrame", mapFrame, "map");
+        UTILITY_DECLARE_GET_PARAM(std::string, "System.lidarFrame", lidarFrame, "base_link");
+        UTILITY_DECLARE_GET_PARAM(std::string, "System.baselinkFrame", baselinkFrame, "base_link");
+        UTILITY_DECLARE_GET_PARAM(std::string, "System.odometryFrame", odometryFrame, "odom");
+        UTILITY_DECLARE_GET_PARAM(std::string, "System.mapFrame", mapFrame, "map");
 
-        nh.param<std::string>("System/savePCDDirectory", savePCDDirectory, "/Downloads/LOAM/");
-        nh.param<std::string>("System/saveSessionDirectory", saveSessionDirectory, "/Downloads/LOAM/");
+        UTILITY_DECLARE_GET_PARAM(std::string, "System.savePCDDirectory", savePCDDirectory, "/Downloads/LOAM/");
+        UTILITY_DECLARE_GET_PARAM(std::string, "System.saveSessionDirectory", saveSessionDirectory, "/Downloads/LOAM/");
 
         std::string sensorStr;
-        nh.param<std::string>("Sensors/sensor", sensorStr, " ");
+        UTILITY_DECLARE_GET_PARAM(std::string, "Sensors.sensor", sensorStr, " ");
         if (sensorStr == "velodyne")
         {
             sensor = SensorType::VELODYNE;
@@ -242,69 +256,72 @@ public:
             sensor = SensorType::MULRAN;
         } 
         else {
-            ROS_ERROR_STREAM("Invalid Sensor Type (must be either 'velodyne' or 'ouster' or 'livox' or 'robosense' or 'mulran'): " << sensorStr);
-            ros::shutdown();
+            RCLCPP_ERROR(this->get_logger(), "Invalid Sensor Type (must be either 'velodyne' or 'ouster' or 'livox' or 'robosense' or 'mulran'): %s", sensorStr.c_str());
+            rclcpp::shutdown();
         }
 
-        nh.param<int>("Sensors/N_SCAN", N_SCAN, 16);
-        nh.param<int>("Sensors/Horizon_SCAN", Horizon_SCAN, 1800);
+        UTILITY_DECLARE_GET_PARAM(int, "Sensors.N_SCAN", N_SCAN, 16);
+        UTILITY_DECLARE_GET_PARAM(int, "Sensors.Horizon_SCAN", Horizon_SCAN, 1800);
 
-        nh.param<bool>("Sensors/have_ring_time_channel", have_ring_time_channel, true);
+        UTILITY_DECLARE_GET_PARAM(bool, "Sensors.have_ring_time_channel", have_ring_time_channel, true);
 
-        nh.param<int>("Sensors/downsampleRate", downsampleRate, 1);
-        nh.param<int>("Sensors/point_filter_num", point_filter_num, 3);
+        UTILITY_DECLARE_GET_PARAM(int, "Sensors.downsampleRate", downsampleRate, 1);
+        UTILITY_DECLARE_GET_PARAM(int, "Sensors.point_filter_num", point_filter_num, 3);
 
-        nh.param<float>("Sensors/lidarMinRange", lidarMinRange, 1.0);
-        nh.param<float>("Sensors/lidarMaxRange", lidarMaxRange, 1000.0);
+        UTILITY_DECLARE_GET_PARAM(float, "Sensors.lidarMinRange", lidarMinRange, 1.0);
+        UTILITY_DECLARE_GET_PARAM(float, "Sensors.lidarMaxRange", lidarMaxRange, 1000.0);
 
-        nh.param<int>("Sensors/imuType", imuType, 0);
-        nh.param<float>("Sensors/imuRate", imuRate, 500.0);
-        nh.param<float>("Sensors/imuAccNoise", imuAccNoise, 0.01);
-        nh.param<float>("Sensors/imuGyrNoise", imuGyrNoise, 0.001);
-        nh.param<float>("Sensors/imuAccBiasN", imuAccBiasN, 0.0002);
-        nh.param<float>("Sensors/imuGyrBiasN", imuGyrBiasN, 0.00003);
-        nh.param<float>("Sensors/imuGravity", imuGravity, 9.80511);
-        nh.param<float>("Sensors/imuRPYWeight", imuRPYWeight, 0.01);
+        UTILITY_DECLARE_GET_PARAM(int, "Sensors.imuType", imuType, 0);
+        UTILITY_DECLARE_GET_PARAM(float, "Sensors.imuRate", imuRate, 500.0);
+        UTILITY_DECLARE_GET_PARAM(float, "Sensors.imuAccNoise", imuAccNoise, 0.01);
+        UTILITY_DECLARE_GET_PARAM(float, "Sensors.imuGyrNoise", imuGyrNoise, 0.001);
+        UTILITY_DECLARE_GET_PARAM(float, "Sensors.imuAccBiasN", imuAccBiasN, 0.0002);
+        UTILITY_DECLARE_GET_PARAM(float, "Sensors.imuGyrBiasN", imuGyrBiasN, 0.00003);
+        UTILITY_DECLARE_GET_PARAM(float, "Sensors.imuGravity", imuGravity, 9.80511);
+        UTILITY_DECLARE_GET_PARAM(float, "Sensors.imuRPYWeight", imuRPYWeight, 0.01);
 
-        nh.param<bool>("Sensors/correct", correct, false);
+        UTILITY_DECLARE_GET_PARAM(bool, "Sensors.correct", correct, false);
 
-        nh.param<std::vector<double>>("Sensors/extrinsicRot", extRotV, std::vector<double>());
-        nh.param<std::vector<double>>("Sensors/extrinsicRPY", extRPYV, std::vector<double>());
-        nh.param<std::vector<double>>("Sensors/extrinsicTrans", extTransV, std::vector<double>());
+        UTILITY_DECLARE_GET_PARAM(std::vector<double>, "Sensors.extrinsicRot", extRotV, std::vector<double>());
+        UTILITY_DECLARE_GET_PARAM(std::vector<double>, "Sensors.extrinsicRPY", extRPYV, std::vector<double>());
+        UTILITY_DECLARE_GET_PARAM(std::vector<double>, "Sensors.extrinsicTrans", extTransV, std::vector<double>());
 
         extRot = Eigen::Map<const Eigen::Matrix<double, -1, -1, Eigen::RowMajor>>(extRotV.data(), 3, 3);
         extRPY = Eigen::Map<const Eigen::Matrix<double, -1, -1, Eigen::RowMajor>>(extRPYV.data(), 3, 3);
         extTrans = Eigen::Map<const Eigen::Matrix<double, -1, -1, Eigen::RowMajor>>(extTransV.data(), 3, 1);
         extQRPY = Eigen::Quaterniond(extRPY).inverse();
 
-        nh.param<float>("Mapping/z_tollerance", z_tollerance, FLT_MAX);
-        nh.param<float>("Mapping/rotation_tollerance", rotation_tollerance, FLT_MAX);
+        UTILITY_DECLARE_GET_PARAM(float, "Mapping.z_tollerance", z_tollerance, FLT_MAX);
+        UTILITY_DECLARE_GET_PARAM(float, "Mapping.rotation_tollerance", rotation_tollerance, FLT_MAX);
 
-        nh.param<std::string>("Mapping/regMethod", regMethod, "DIRECT1");
-        nh.param<float>("Mapping/ndtResolution", ndtResolution, 1.0);
-        nh.param<float>("Mapping/ndtEpsilon", ndtEpsilon, 0.01);
+        UTILITY_DECLARE_GET_PARAM(std::string, "Mapping.regMethod", regMethod, "DIRECT1");
+        UTILITY_DECLARE_GET_PARAM(float, "Mapping.ndtResolution", ndtResolution, 1.0);
+        UTILITY_DECLARE_GET_PARAM(float, "Mapping.ndtEpsilon", ndtEpsilon, 0.01);
 
-        nh.param<float>("Mapping/timeInterval", timeInterval, 0.2);
+        UTILITY_DECLARE_GET_PARAM(float, "Mapping.timeInterval", timeInterval, 0.2);
 
-        nh.param<double>("Mapping/mappingProcessInterval", mappingProcessInterval, 0.15);
+        UTILITY_DECLARE_GET_PARAM(double, "Mapping.mappingProcessInterval", mappingProcessInterval, 0.15);
 
-        nh.param<float>("Mapping/mappingSurfLeafSize", mappingSurfLeafSize, 0.2);
-        nh.param<float>("Mapping/surroundingKeyframeMapLeafSize", surroundingKeyframeMapLeafSize, 0.4);
+        UTILITY_DECLARE_GET_PARAM(float, "Mapping.mappingSurfLeafSize", mappingSurfLeafSize, 0.2);
+        UTILITY_DECLARE_GET_PARAM(float, "Mapping.surroundingKeyframeMapLeafSize", surroundingKeyframeMapLeafSize, 0.4);
 
-        nh.param<float>("Mapping/surroundingkeyframeAddingDistThreshold", surroundingkeyframeAddingDistThreshold, 1.0);
-        nh.param<float>("Mapping/surroundingkeyframeAddingAngleThreshold", surroundingkeyframeAddingAngleThreshold, 0.2);
-        nh.param<float>("Mapping/surroundingKeyframeDensity", surroundingKeyframeDensity, 1.0);
-        nh.param<float>("Mapping/surroundingKeyframeSearchRadius", surroundingKeyframeSearchRadius, 50.0);
+        UTILITY_DECLARE_GET_PARAM(float, "Mapping.surroundingkeyframeAddingDistThreshold", surroundingkeyframeAddingDistThreshold, 1.0);
+        UTILITY_DECLARE_GET_PARAM(float, "Mapping.surroundingkeyframeAddingAngleThreshold", surroundingkeyframeAddingAngleThreshold, 0.2);
+        UTILITY_DECLARE_GET_PARAM(float, "Mapping.surroundingKeyframeDensity", surroundingKeyframeDensity, 1.0);
+        UTILITY_DECLARE_GET_PARAM(float, "Mapping.surroundingKeyframeSearchRadius", surroundingKeyframeSearchRadius, 50.0);
 
-        nh.param<float>("Mapping/globalMapVisualizationSearchRadius", globalMapVisualizationSearchRadius, 1e3);
-        nh.param<float>("Mapping/globalMapVisualizationPoseDensity", globalMapVisualizationPoseDensity, 10.0);
-        nh.param<float>("Mapping/globalMapVisualizationLeafSize", globalMapVisualizationLeafSize, 1.0);
+        UTILITY_DECLARE_GET_PARAM(float, "Mapping.globalMapVisualizationSearchRadius", globalMapVisualizationSearchRadius, 1e3);
+        UTILITY_DECLARE_GET_PARAM(float, "Mapping.globalMapVisualizationPoseDensity", globalMapVisualizationPoseDensity, 10.0);
+        UTILITY_DECLARE_GET_PARAM(float, "Mapping.globalMapVisualizationLeafSize", globalMapVisualizationLeafSize, 1.0);
+
+        UTILITY_DECLARE_GET_PARAM(std::string, "Qos.history_policy", history_policy, "history_keep_last");
+        UTILITY_DECLARE_GET_PARAM(std::string, "reliability_policy", reliability_policy, "reliability_reliable");
 
         usleep(100);
     }
 
-    sensor_msgs::Imu imuConverter(const sensor_msgs::Imu& imu_in) {
-        sensor_msgs::Imu imu_out = imu_in;
+    sensor_msgs::msg::Imu imuConverter(const sensor_msgs::msg::Imu& imu_in) {
+        sensor_msgs::msg::Imu imu_out = imu_in;
         // rotate acceleration
         Eigen::Vector3d acc(imu_in.linear_acceleration.x, imu_in.linear_acceleration.y, imu_in.linear_acceleration.z);
         acc = extRot * acc;
@@ -329,8 +346,8 @@ public:
 
             if (sqrt(q_final.x()*q_final.x() + q_final.y()*q_final.y() + q_final.z()*q_final.z() + q_final.w()*q_final.w()) < 0.1)
             {
-                ROS_ERROR("Invalid quaternion, please use a 9-axis IMU!");
-                ros::shutdown();
+                RCLCPP_ERROR(this->get_logger(), "Invalid quaternion, please use a 9-axis IMU!");
+                rclcpp::shutdown();
             }
         }
 
@@ -339,26 +356,28 @@ public:
 };
 
 template<typename T>
-sensor_msgs::PointCloud2 publishCloud(const ros::Publisher& thisPub, const T& thisCloud, ros::Time thisStamp, std::string thisFrame) {
-    sensor_msgs::PointCloud2 tempCloud;
+sensor_msgs::msg::PointCloud2 publishCloud(
+    const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr& thisPub, 
+    const T& thisCloud, rclcpp::Time thisStamp, std::string thisFrame) {
+    sensor_msgs::msg::PointCloud2 tempCloud;
     pcl::toROSMsg(*thisCloud, tempCloud);
     tempCloud.header.stamp = thisStamp;
     tempCloud.header.frame_id = thisFrame;
 
-    if (thisPub.getNumSubscribers() != 0)
-        thisPub.publish(tempCloud);
+    if (thisPub->get_subscription_count() != 0)
+        thisPub->publish(tempCloud);
 
     return tempCloud;
 }
 
 template<typename T>
 double ROS_TIME(T msg) {
-    return msg->header.stamp.toSec();
+    return rclcpp::Time(msg).seconds();
 }
 
 
 template<typename T>
-void imuAngular2rosAngular(sensor_msgs::Imu *thisImuMsg, T *angular_x, T *angular_y, T *angular_z) {
+void imuAngular2rosAngular(sensor_msgs::msg::Imu *thisImuMsg, T *angular_x, T *angular_y, T *angular_z) {
     *angular_x = thisImuMsg->angular_velocity.x;
     *angular_y = thisImuMsg->angular_velocity.y;
     *angular_z = thisImuMsg->angular_velocity.z;
@@ -366,7 +385,7 @@ void imuAngular2rosAngular(sensor_msgs::Imu *thisImuMsg, T *angular_x, T *angula
 
 
 template<typename T>
-void imuAccel2rosAccel(sensor_msgs::Imu *thisImuMsg, T *acc_x, T *acc_y, T *acc_z) {
+void imuAccel2rosAccel(sensor_msgs::msg::Imu *thisImuMsg, T *acc_x, T *acc_y, T *acc_z) {
     *acc_x = thisImuMsg->linear_acceleration.x;
     *acc_y = thisImuMsg->linear_acceleration.y;
     *acc_z = thisImuMsg->linear_acceleration.z;
@@ -374,11 +393,11 @@ void imuAccel2rosAccel(sensor_msgs::Imu *thisImuMsg, T *acc_x, T *acc_y, T *acc_
 
 
 template<typename T>
-void imuRPY2rosRPY(sensor_msgs::Imu *thisImuMsg, T *rosRoll, T *rosPitch, T *rosYaw) {
+void imuRPY2rosRPY(sensor_msgs::msg::Imu *thisImuMsg, T *rosRoll, T *rosPitch, T *rosYaw) {
     double imuRoll, imuPitch, imuYaw;
-    tf::Quaternion orientation;
-    tf::quaternionMsgToTF(thisImuMsg->orientation, orientation);
-    tf::Matrix3x3(orientation).getRPY(imuRoll, imuPitch, imuYaw);
+    tf2::Quaternion orientation;
+    tf2::fromMsg(thisImuMsg->orientation, orientation);
+    tf2::Matrix3x3(orientation).getRPY(imuRoll, imuPitch, imuYaw);
 
     *rosRoll = imuRoll;
     *rosPitch = imuPitch;
@@ -490,6 +509,31 @@ float pointDistance(const T& p) {
 template<typename T>
 float pointDistance(const T& p1, const T& p2) {
     return sqrt((p1.x - p2.x) * (p1.x - p2.x) + (p1.y - p2.y) * (p1.y - p2.y) + (p1.z - p2.z) * (p1.z - p2.z));
+}
+
+rclcpp::QoS QosPolicy(const std::string &history_policy, const std::string &reliability_policy)
+{
+    rmw_qos_profile_t qos_profile;
+    if (history_policy == "history_keep_last")
+        qos_profile.history = rmw_qos_history_policy_t::RMW_QOS_POLICY_HISTORY_KEEP_LAST;
+    else if (history_policy == "history_keep_all")
+        qos_profile.history = rmw_qos_history_policy_t::RMW_QOS_POLICY_HISTORY_KEEP_ALL;
+
+    if (reliability_policy == "reliability_reliable")
+        qos_profile.reliability = rmw_qos_reliability_policy_t::RMW_QOS_POLICY_RELIABILITY_RELIABLE;
+    else if (reliability_policy == "reliability_best_effort")
+        qos_profile.reliability = rmw_qos_reliability_policy_t::RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
+
+    qos_profile.depth = 2000;
+
+    qos_profile.durability = rmw_qos_durability_policy_t::RMW_QOS_POLICY_DURABILITY_VOLATILE;
+    qos_profile.deadline = RMW_QOS_DEADLINE_DEFAULT;
+    qos_profile.lifespan = RMW_QOS_LIFESPAN_DEFAULT;
+    qos_profile.liveliness = rmw_qos_liveliness_policy_t::RMW_QOS_POLICY_LIVELINESS_SYSTEM_DEFAULT;
+    qos_profile.liveliness_lease_duration = RMW_QOS_LIVELINESS_LEASE_DURATION_DEFAULT;
+    qos_profile.avoid_ros_namespace_conventions = false;
+
+    return rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, qos_profile.depth), qos_profile);
 }
 
 #endif

@@ -1,14 +1,8 @@
 #pragma once
 
-#ifndef _DATA_LOADER_
-#define _DATA_LOADER_
-
 #include "../utility.h"
 
-#include <experimental/filesystem> // file gcc>=8
-#include <experimental/optional>
-
-namespace fs = std::experimental::filesystem;
+// #include <experimental/optional>
 
 namespace dataManager {
 
@@ -46,8 +40,8 @@ struct G2oLineInfo {
     inline static const std::string kEdgeTypeName = "EDGE_SE3:QUAT";
 }; 
 
-using SessionNodes = std::multimap<int, Node>; // from_idx, Node
-using SessionEdges = std::multimap<int, Edge>; // from_idx, Edge
+using SessionNodes = std::multimap<int, dataManager::Node>; // from_idx, dataManager::Node
+using SessionEdges = std::multimap<int, dataManager::Edge>; // from_idx, dataManager::Edge
 
 bool isTwoStringSame(std::string _str1, std::string _str2) {
 	return !(_str1.compare(_str2));
@@ -170,10 +164,10 @@ public:
 
 public:
     ~Session() { }
-    Session() { }
+    Session(rclcpp::NodeOptions & options) : ParamServer("liloc_data_loader", options) { }
 
-    Session(int _idx, std::string _name, std::string _session_dir_path, bool _is_base_session)
-           : index_(_idx), name_(_name), session_dir_path_(_session_dir_path), is_base_session_(_is_base_session){
+    Session(int _idx, std::string _name, std::string _session_dir_path, bool _is_base_session, rclcpp::NodeOptions & options)
+           : ParamServer("liloc_data_loader", options), index_(_idx), name_(_name), session_dir_path_(_session_dir_path), is_base_session_(_is_base_session){
 
         allocateMemory();
 
@@ -187,7 +181,7 @@ public:
 
         generateSubMaps();
 
-        ROS_INFO_STREAM("\033[1;32m Session " << index_ << " (" << name_ << ") is loaded successfully \033[0m");
+        RCLCPP_INFO(this->get_logger(), "\033[1;32m Session %d (%s) is loaded successfully \033[0m", index_, name_.c_str());
     }
 
     void allocateMemory() {
@@ -215,24 +209,24 @@ public:
 
             // save variables (nodes)
             if (isTwoStringSame(line_info.type, G2oLineInfo::kVertexTypeName)) {
-                Node this_node { line_info.curr_idx, gtsam::Pose3( 
+                dataManager::Node this_node { line_info.curr_idx, gtsam::Pose3( 
                     gtsam::Rot3(gtsam::Quaternion(line_info.quat[3], line_info.quat[0], line_info.quat[1], line_info.quat[2])), // xyzw to wxyz
                     gtsam::Point3(line_info.trans[0], line_info.trans[1], line_info.trans[2])) }; 
-                nodes_.insert(std::pair<int, Node>(line_info.curr_idx, this_node)); 
+                nodes_.insert(std::pair<int, dataManager::Node>(line_info.curr_idx, this_node)); 
             }
  
             // save edges 
             if(isTwoStringSame(line_info.type, G2oLineInfo::kEdgeTypeName)) {
-                Edge this_edge { line_info.prev_idx, line_info.curr_idx, gtsam::Pose3( 
+                dataManager::Edge this_edge { line_info.prev_idx, line_info.curr_idx, gtsam::Pose3( 
                     gtsam::Rot3(gtsam::Quaternion(line_info.quat[3], line_info.quat[0], line_info.quat[1], line_info.quat[2])), // xyzw to wxyz
                     gtsam::Point3(line_info.trans[0], line_info.trans[1], line_info.trans[2])) }; 
-                edges_.insert(std::pair<int, Edge>(line_info.prev_idx, this_edge)); 
+                edges_.insert(std::pair<int, dataManager::Edge>(line_info.prev_idx, this_edge)); 
             }
         }
 
         initKeyPoses();
 
-        ROS_INFO_STREAM("\033[1;32m Graph loaded: " << posefile_path << " - num nodes: " << nodes_.size() << "\033[0m");
+        RCLCPP_INFO (this->get_logger(), "\033[1;32m Graph loaded: %s - num nodes: %d\033[0m", posefile_path.c_str(), (int)nodes_.size());
     }
 
     void initKeyPoses() {
@@ -240,7 +234,7 @@ public:
             PointTypePose thisPose6D;
 
             int node_idx = _node_info.first;
-            Node node = _node_info.second; 
+            dataManager::Node node = _node_info.second; 
             gtsam::Pose3 pose = node.initial;
 
             thisPose6D.x = pose.translation().x();
@@ -271,7 +265,7 @@ public:
     void loadGlobalMap() {
         std::string mapfile_path = session_dir_path_ + "/globalMap.pcd";  
         pcl::io::loadPCDFile<PointType>(mapfile_path, *globalMap_);
-        ROS_INFO_STREAM("\033[1;32m Map loaded: " << mapfile_path << " - size: " << globalMap_->points.size() << "\033[0m");
+        RCLCPP_INFO (this->get_logger(), "\033[1;32m Map loaded: %s - size: %d\033[0m", mapfile_path.c_str(), (int)globalMap_->points.size());
     }
 
     void loadKeyCloud() {
@@ -300,7 +294,7 @@ public:
             pcd_count ++;
         }
 
-        ROS_INFO_STREAM("\033[1;32m Key Cloud loaded: " << pcd_dir << " - num pcds: " << keyCloudVec_.size() << "\033[0m");
+        RCLCPP_INFO (this->get_logger(), "\033[1;32m Key Cloud loaded: %s - num pcds: %d\033[0m", pcd_dir.c_str(), (int)keyCloudVec_.size());
     }
 
     void generateSubMaps() {
@@ -310,7 +304,7 @@ public:
 
         TrajectoryPtr vertexCloud(new Trajectory());
 
-        for (int i = 0; i < keyCloudVec_.size(); i++) {
+        for (int i = 0; i < (int)keyCloudVec_.size(); i++) {
             count ++;
             *submap += *transformPointCloud(keyCloudVec_[i], &KeyPoses6D_->points[i]);
             x += KeyPoses6D_->points[i].x;
@@ -319,7 +313,7 @@ public:
 
             vertexCloud->push_back(KeyPoses6D_->points[i]);
 
-            if (count % submap_size == 0 || i == keyCloudVec_.size() - 1) {
+            if (count % submap_size == 0 || i == (int)keyCloudVec_.size() - 1) {
                 PointTypePose centeriod;
                 centeriod.x = x / (float)count;
                 centeriod.y = y / (float)count;
@@ -344,7 +338,7 @@ public:
             }
         }
 
-        ROS_INFO_STREAM("\033[1;32m Submap Generated - num: " << subMapCloudVec_.size() << " with pcd num: " << submap_size << "\033[0m");
+        RCLCPP_INFO(this->get_logger(), "\033[1;32m Submap Generated - num: %d with pcd num: %d\033[0m", (int)subMapCloudVec_.size(), submap_size);
     }
 
     void searchNearestSubMapAndVertex(const PointTypePose& pose, int& map_id) {
@@ -391,5 +385,3 @@ public:
 };
 
 }
-
-#endif

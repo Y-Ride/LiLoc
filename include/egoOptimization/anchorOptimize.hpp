@@ -15,7 +15,7 @@
 
 namespace optimization {
 
-class AnchorOptimization : public ParamServer {
+class AnchorOptimization {
 public:
     std::mutex mtx;
 
@@ -73,7 +73,7 @@ public:
 
         allocateMemory();
 
-        ROS_INFO_STREAM("\033[1;32m Anchor Optimization is initialized successfully \033[0m");
+        RCLCPP_INFO(rclcpp::get_logger("AnchorOptimization"), "\033[1;32m Anchor Optimization is initialized successfully \033[0m");
     }
 
     void allocateMemory() {
@@ -183,7 +183,8 @@ public:
 
         updateSessionPoses();
 
-        ROS_INFO_STREAM("Optimize ... " << " Have prior nodes: " << priorNodePtIds_.size() << ", current odometry nodes: " << currOdomNodeIds_.size() << " and incremental nodes: " << increNodePtIds_.size());
+        RCLCPP_INFO(rclcpp::get_logger("AnchorOptimization"), "Optimize ...  Have prior nodes: %d, current odometry nodes: %d, and incremental nodes: %d", 
+                    (int)priorNodePtIds_.size(), (int)currOdomNodeIds_.size(), (int)increNodePtIds_.size());
     }
 
     void getCurrentPose(const int &key, const PointTypePose & cur_pose, const CloudPtr & cur_cloud) {
@@ -195,7 +196,7 @@ public:
     }
 
     void margilization() {
-        if ((key_ != 0 && key_ % 10 == 0 || priorSession_->margFlag)) {
+        if ((key_ != 0 && key_ % 10 == 0) || priorSession_->margFlag) {
             int currentId = genGlobalNodeIdx(session_id, key_);
 
             gtsam::noiseModel::Gaussian::shared_ptr updatedPoseNoise = gtsam::noiseModel::Gaussian::Covariance(isam_->marginalCovariance(currentId));
@@ -211,31 +212,28 @@ public:
         addLidarFactor();
 
         double t1 = time.toc("lidar factor");
-
-        // std::cout << " lidar factor :" << t1 << std::endl;
-
+        
         addImuFactor();
-
-
+        
         addScanMatchingFactor();
-
+        
         double t2 = time.toc("scan factor");
-
-        // std::cout << " scan factor :" << t2 - t1 << std::endl;
-
-
+        
         optimizeGraph(1);
-
+        
         double t3 = time.toc("opt");
-
-        // std::cout << " opt :" << t3 - t2 << std::endl;
-    
-
+        
         margilization();
-
+        
         double t4 = time.toc("marg");
-
-        // std::cout << " marg :" << t4 - t3 << std::endl;
+        
+        if (false) 
+        {
+            std::cout << " lidar factor :" << t1 << std::endl;
+            std::cout << " scan factor :" << t2 - t1 << std::endl;
+            std::cout << " opt :" << t3 - t2 << std::endl;
+            std::cout << " marg :" << t4 - t3 << std::endl;
+        }
     }
 
     void addLidarFactor() {
@@ -305,10 +303,10 @@ public:
             float x, y, z, roll, pitch, yaw;
             pcl::getTranslationAndEulerAngles(transBetween, x, y, z, roll, pitch, yaw);
 
-            if (abs(roll)  < surroundingkeyframeAddingAngleThreshold &&
-                abs(pitch) < surroundingkeyframeAddingAngleThreshold && 
-                abs(yaw)   < surroundingkeyframeAddingAngleThreshold &&
-                sqrt(x * x + y * y + z * z) < surroundingkeyframeAddingDistThreshold) 
+            if (abs(roll)  < priorSession_->surroundingkeyframeAddingAngleThreshold &&
+                abs(pitch) < priorSession_->surroundingkeyframeAddingAngleThreshold && 
+                abs(yaw)   < priorSession_->surroundingkeyframeAddingAngleThreshold &&
+                sqrt(x * x + y * y + z * z) < priorSession_->surroundingkeyframeAddingDistThreshold) 
             {
                 return ;
             }
@@ -343,7 +341,7 @@ public:
                 TrajectoryPtr vertexCloud(new Trajectory());
                 float xx = 0.0, xy = 0.0, xz = 0.0;
 
-                for (int i = end; i < priorSession_->keyCloudVec_.size(); i++) {
+                for (int i = end; i < (int)priorSession_->keyCloudVec_.size(); i++) {
                     *submap += *transformPointCloud(priorSession_->keyCloudVec_[i], &priorSession_->KeyPoses6D_->points[i]);
                     xx += priorSession_->KeyPoses6D_->points[i].x;
                     xy += priorSession_->KeyPoses6D_->points[i].y;
