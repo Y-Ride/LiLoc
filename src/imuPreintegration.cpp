@@ -165,7 +165,6 @@ public:
     std::mutex mtx;
 
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr subImu;
-    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr subOdometry;
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubImuOdometry;
 
     bool systemInitialized = false;
@@ -212,9 +211,6 @@ public:
     {
         subImu = create_subscription<sensor_msgs::msg::Imu>(imuTopic, 2000, 
                     std::bind(&IMUPreintegration::imuHandler, this, std::placeholders::_1));
-
-        subOdometry = create_subscription<nav_msgs::msg::Odometry>("liorf/mapping/odometry_incremental", 5,
-                    std::bind(&IMUPreintegration::odometryHandler, this, std::placeholders::_1));
 
         pubImuOdometry = create_publisher<nav_msgs::msg::Odometry>(odomTopic+"_incremental", 2000);
 
